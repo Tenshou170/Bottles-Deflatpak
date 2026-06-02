@@ -71,8 +71,6 @@ python3Packages.buildPythonApplication {
       icoextract
       patool
       pathvalidate
-      fvs
-      orjson
       pycairo
       pygobject3
       charset-normalizer
@@ -89,6 +87,9 @@ python3Packages.buildPythonApplication {
       imagemagick
       vkbasalt-cli
       bubblewrap
+      # fvs2 (versioning backend, Go binary) is not yet in nixpkgs.
+      # Install it manually from https://github.com/fvs-lab/fvs2 if you
+      # need bottle snapshot/versioning support. Bottles runs fine without it.
       umu-launcher
       file
       kmod
@@ -113,8 +114,8 @@ python3Packages.buildPythonApplication {
   '';
 
   meta = {
-    description = "Easy-to-use wineprefix manager (Fork with Flatpak-specific dependencies removed)";
-    homepage = "https://github.com/THShafi170/Bottles-Deflatpak";
+    description = "Easy-to-use wineprefix manager (native fork, Flatpak-specific dependencies removed)";
+    homepage = "https://github.com/Tenshou170/Bottles-Deflatpak";
     license = lib.licenses.gpl3Only;
     platforms = lib.platforms.linux;
     mainProgram = "bottles";

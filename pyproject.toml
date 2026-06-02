@@ -7,8 +7,23 @@ log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(linen
 exclude = [
 	"bottles/backend/utils/nvidia.py",
 	"bottles/backend/utils/vdf.py",
+	"bottles/backend/models/vdict.py",
 	"venv",
 ]
 
 [tool.ruff.lint]
-ignore = ["F401", "F402", "E722", "E741"]
+ignore = ["F402", "E722", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing upstream unused imports — tracked separately
+"bottles/backend/globals.py" = ["F401"]
+"bottles/backend/wine/winecommand.py" = ["F401"]
+"bottles/frontend/cli/cli.py" = ["F401"]
+"bottles/frontend/views/bottle_details.py" = ["F401"]
+"bottles/frontend/views/bottle_preferences.py" = ["F401"]
+"bottles/frontend/views/bottle_versioning.py" = ["F401"]
+"bottles/frontend/views/list.py" = ["F401"]
+"bottles/frontend/views/new_bottle_dialog.py" = ["F401"]
+"bottles/frontend/windows/window.py" = ["F401"]
+"bottles/tests/backend/integration/playtime/test_robustness.py" = ["F401"]
+"tests/test_fvs.py" = ["F401"]

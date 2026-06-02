@@ -17,13 +17,30 @@
 
 import os
 import shlex
+import signal
 import subprocess
-from typing import Optional, List
+from typing import List, Optional
 
 from bottles.backend.globals import sandbox_available
 
 
 class SandboxManager:
+    """
+    Native bubblewrap sandbox manager for Bottles-Deflatpak.
+
+    Uses bwrap with a deny-by-default policy and selectively shares only
+    the resources (GPU, display, sound, network) requested by the bottle
+    configuration. Falls back to unsandboxed execution when bwrap is not
+    installed.
+
+    Process tracking: running launcher PIDs are stored per WINEPREFIX so
+    that terminate_prefix() can reliably kill the entire process group even
+    when the Wine processes are grandchildren of the bwrap call.
+    """
+
+    # Per-WINEPREFIX list of running bwrap Popen handles.
+    _running: dict[str, list[subprocess.Popen]] = {}
+
     def __init__(
         self,
         envs: Optional[dict] = None,
@@ -49,7 +66,7 @@ class SandboxManager:
         self.share_display = share_display
         self.share_sound = share_sound
         self.share_gpu = share_gpu
-        self.__uid = os.environ.get("UID", os.getuid())
+        self.__uid = str(os.environ.get("UID", os.getuid()))
         self.__xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
 
     def __get_bwrap_args(self) -> List[str]:
@@ -59,29 +76,30 @@ class SandboxManager:
         if self.clear_env:
             args.append("--clearenv")
         for k, v in self.envs.items():
-            args.extend(["--setenv", k, v])
+            args.extend(["--setenv", k, str(v)])
 
-        # Basic filesystem
+        # Basic filesystem skeleton
         args.extend(["--proc", "/proc"])
         args.extend(["--dev", "/dev"])
         args.extend(["--tmpfs", "/tmp"])
         args.extend(["--dir", "/var"])
         args.extend(["--dir", "/run"])
 
-        # Essential system paths
+        # Essential system paths (bind read-only where present)
         for p in [
             "/usr",
             "/lib",
             "/lib64",
             "/bin",
             "/sbin",
+            # NixOS / immutable-rootfs distros
             "/nix/store",
             "/run/current-system",
         ]:
             if os.path.exists(p):
                 args.extend(["--ro-bind", p, p])
 
-        # Essential config files
+        # Essential config & font files
         for p in [
             "/etc/ld.so.cache",
             "/etc/ld.so.conf",
@@ -97,49 +115,50 @@ class SandboxManager:
             if os.path.exists(p):
                 args.extend(["--ro-bind", p, p])
 
-        # Host access
+        # Broader host read-only access (respects share_host_ro flag)
         if self.share_host_ro:
             args.extend(["--ro-bind-try", "/etc", "/etc"])
-            # We don't bind-try / because it would override our unshare-all philosophy
-            # but if the user explicitly wants share_host_ro, maybe they expect more?
-            # For now, we stick to essential host bins/libs already added.
 
-        # Working directory
+        # Working directory: expose and chdir into it
         if self.chdir:
             args.extend(["--chdir", self.chdir])
             args.extend(["--bind", self.chdir, self.chdir])
 
-        # Custom shared paths
+        # Caller-specified read-only paths
         for p in self.share_paths_ro:
-            if os.path.exists(p):
+            if p and os.path.exists(p):
                 args.extend(["--ro-bind", p, p])
+
+        # Caller-specified read-write paths
         for p in self.share_paths_rw:
-            if os.path.exists(p):
+            if p and os.path.exists(p):
                 args.extend(["--bind", p, p])
 
-        # D-Bus
+        # D-Bus session socket (needed for display/sound forwarding)
         if (self.share_display or self.share_sound) and self.__xdg_runtime_dir:
             dbus_socket = os.path.join(self.__xdg_runtime_dir, "bus")
             if os.path.exists(dbus_socket):
                 args.extend(["--bind", dbus_socket, dbus_socket])
                 args.extend(
-                    ["--setenv", "DBUS_SESSION_BUS_ADDRESS", f"unix:path={dbus_socket}"]
+                    [
+                        "--setenv",
+                        "DBUS_SESSION_BUS_ADDRESS",
+                        f"unix:path={dbus_socket}",
+                    ]
                 )
 
         # Networking
         if self.share_net:
             args.append("--share-net")
-            # Need /etc/resolv.conf for DNS
             if os.path.exists("/etc/resolv.conf"):
                 args.extend(["--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf"])
 
-        # User isolation
+        # User namespace
         if self.share_user:
             args.append("--share-user")
 
-        # Display sharing
+        # Display sharing — X11 + Wayland
         if self.share_display:
-            # X11
             x_display = os.environ.get("DISPLAY")
             if x_display:
                 args.extend(["--setenv", "DISPLAY", x_display])
@@ -147,8 +166,6 @@ class SandboxManager:
                 x_socket = f"/tmp/.X11-unix/X{display_num}"
                 if os.path.exists(x_socket):
                     args.extend(["--bind", x_socket, x_socket])
-
-                # Xauthority
                 xauth = os.environ.get("XAUTHORITY") or os.path.expanduser(
                     "~/.Xauthority"
                 )
@@ -156,7 +173,6 @@ class SandboxManager:
                     args.extend(["--setenv", "XAUTHORITY", xauth])
                     args.extend(["--ro-bind", xauth, xauth])
 
-            # Wayland
             wayland_display = os.environ.get("WAYLAND_DISPLAY")
             if wayland_display and self.__xdg_runtime_dir:
                 args.extend(["--setenv", "WAYLAND_DISPLAY", wayland_display])
@@ -164,36 +180,31 @@ class SandboxManager:
                 if os.path.exists(wayland_socket):
                     args.extend(["--bind", wayland_socket, wayland_socket])
 
-        # Sound sharing
-        if self.share_sound:
-            if self.__xdg_runtime_dir:
-                # PulseAudio
-                pulse_socket = os.getenv("PULSE_SERVER")
-                if pulse_socket and pulse_socket.startswith("unix:"):
-                    pulse_path = pulse_socket[5:]
-                    if os.path.exists(pulse_path):
-                        args.extend(["--bind", pulse_path, pulse_path])
-                else:
-                    pulse_dir = os.path.join(self.__xdg_runtime_dir, "pulse")
-                    if os.path.exists(pulse_dir):
-                        args.extend(["--bind", pulse_dir, pulse_dir])
+        # Sound sharing — PulseAudio + PipeWire
+        if self.share_sound and self.__xdg_runtime_dir:
+            pulse_socket = os.getenv("PULSE_SERVER")
+            if pulse_socket and pulse_socket.startswith("unix:"):
+                pulse_path = pulse_socket[5:]
+                if os.path.exists(pulse_path):
+                    args.extend(["--bind", pulse_path, pulse_path])
+            else:
+                pulse_dir = os.path.join(self.__xdg_runtime_dir, "pulse")
+                if os.path.exists(pulse_dir):
+                    args.extend(["--bind", pulse_dir, pulse_dir])
 
-                # PipeWire
-                pw_socket = os.path.join(self.__xdg_runtime_dir, "pipewire-0")
-                if os.path.exists(pw_socket):
-                    args.extend(["--bind", pw_socket, pw_socket])
+            pw_socket = os.path.join(self.__xdg_runtime_dir, "pipewire-0")
+            if os.path.exists(pw_socket):
+                args.extend(["--bind", pw_socket, pw_socket])
 
-        # GPU sharing
+        # GPU sharing — DRI + NVIDIA + NixOS OpenGL drivers
         if self.share_gpu:
             if os.path.exists("/dev/dri"):
                 args.extend(["--dev-bind", "/dev/dri", "/dev/dri"])
 
-            # NixOS specific opengl driver paths
             for p in ["/run/opengl-driver", "/run/opengl-driver-32"]:
                 if os.path.exists(p):
                     args.extend(["--ro-bind", p, p])
 
-            # NVIDIA support
             for i in range(16):
                 dev = f"/dev/nvidia{i}"
                 if os.path.exists(dev):
@@ -210,31 +221,54 @@ class SandboxManager:
         return args
 
     def get_cmd_list(self, cmd: str) -> List[str]:
+        """Return the full argv list for this sandboxed command."""
         if sandbox_available:
             args = self.__get_bwrap_args()
-            # The command to run within bwrap
-            # If cmd is a string, we might need to wrap it in a shell to handle arguments correctly
-            # but Bottles usually passes the full command string.
-            # To be safe and avoid shell injection, we'll try to split if it's a simple command.
-            # However, Wine commands are often complex.
-            # Let's use /bin/sh -c to run the command inside.
             args.extend(["/bin/sh", "-c", cmd])
             return args
-        else:
-            return ["/bin/sh", "-c", cmd]
+        return ["/bin/sh", "-c", cmd]
 
     def get_cmd(self, cmd: str) -> str:
-        return " ".join([shlex.quote(a) for a in self.get_cmd_list(cmd)])
+        """Return the full command as a shell-safe string."""
+        return " ".join(shlex.quote(a) for a in self.get_cmd_list(cmd))
 
     def run(self, cmd: str) -> subprocess.Popen[bytes]:
+        """Launch *cmd* inside the sandbox and return the Popen handle."""
         env = os.environ.copy()
         if not sandbox_available:
+            # No bwrap: inject envs directly into the host environment copy.
             env.update(self.envs)
 
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             self.get_cmd_list(cmd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
             env=env,
         )
+
+        # Track by WINEPREFIX so terminate_prefix() can find this process.
+        prefix = self.envs.get("WINEPREFIX")
+        if prefix:
+            self._running.setdefault(prefix, []).append(proc)
+
+        return proc
+
+    @classmethod
+    def terminate_prefix(cls, prefix: str, sig: int = signal.SIGKILL) -> int:
+        """
+        Kill the process group of every sandbox launcher started for the
+        given WINEPREFIX. Returns how many processes were signalled.
+        Finished launchers are pruned from the tracking list.
+        """
+        killed = 0
+        for proc in cls._running.get(prefix, []):
+            if proc.poll() is not None:
+                continue
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        cls._running[prefix] = []
+        return killed

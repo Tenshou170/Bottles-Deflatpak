@@ -33,13 +33,26 @@ FVS2_CMD = "fvs2"
 
 logging = Logger()
 
+# fvs2 stores each block as a separate file in a flat .fvs2/blocks/ directory.
+# With the upstream 4KiB default a large prefix (e.g. a game bottle) ends up
+# split into millions of tiny files, which fills the inode table and makes
+# external sync tools crawl. A bigger block size keeps the file count sane.
+# The value is persisted per repo at init time, so existing repos keep their
+# own block size and are left untouched.
+DEFAULT_BLOCK_SIZE = 1048576  # 1 MiB
+
 
 class FVSRepo:
     def __init__(
-        self, repo_path: str, use_compression: bool = False, no_init: bool = False
+        self,
+        repo_path: str,
+        use_compression: bool = False,
+        no_init: bool = False,
+        block_size: int = DEFAULT_BLOCK_SIZE,
     ):
         self._repo_path = repo_path
         self._use_compression = use_compression
+        self._block_size = block_size
         self._fvs2 = self._get_fvs2_bin()
         self._lock = Lock()
 
@@ -80,7 +93,9 @@ class FVSRepo:
                 return
 
             with self._lock:
-                res = self._run_cmd("init", check=False)
+                res = self._run_cmd(
+                    "init", "--block-size", str(self._block_size), check=False
+                )
                 if res.returncode != 0 and "already initialized" not in res.stderr:
                     raise RuntimeError(f"Failed to initialize FVS: {res.stderr}")
 

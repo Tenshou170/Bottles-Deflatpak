@@ -15,10 +15,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import webbrowser
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gio, Gtk
 
 from bottles.frontend.windows.generic import SourceDialog
 from bottles.frontend.windows.installer import InstallerDialog
@@ -100,8 +99,9 @@ class InstallerEntry(Adw.ActionRow):
 
     @staticmethod
     def __open_bug_report(widget):
-        """Open bug report"""
-        webbrowser.open("https://github.com/bottlesdevs/programs/issues")
+        Gio.AppInfo.launch_default_for_uri(
+            "https://github.com/bottlesdevs/programs/issues", None
+        )
 
     def __execute_installer(self, widget):
         InstallerDialog(self.window, self.config, self.installer).present()

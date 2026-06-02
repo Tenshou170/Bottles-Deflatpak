@@ -30,6 +30,7 @@ class UserDataKeys:
     CustomBottlesPath = "custom_bottles_path"
 
     PersonalRepositories = "personal_repositories"
+    TrustedExecutables = "trusted_executables"
 
 
 class DataManager:

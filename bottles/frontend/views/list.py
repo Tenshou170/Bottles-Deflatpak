@@ -16,22 +16,18 @@
 #
 
 from datetime import datetime
-from gettext import gettext as _
+from gettext import gettext as _, ngettext
 
 from gi.repository import Adw, GLib, Gtk
 
-try:
-    from gi.repository import Xdp
-except (ImportError, ValueError):
-    Xdp = None
-
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.models.result import Result
-from bottles.backend.state import SignalManager, Signals
+from bottles.backend.state import EventManager, Events, SignalManager, Signals
 from bottles.backend.utils.threading import RunAsync
 from bottles.backend.wine.executor import WineExecutor
 from bottles.frontend.params import APP_ID
 from bottles.frontend.utils.filters import add_all_filters, add_executable_filters
+from bottles.frontend.utils.sandbox_guard import guard_sandbox_launch
 
 
 @Gtk.Template(resource_path="/com/usebottles/bottles/bottle-row.ui")
@@ -92,15 +88,20 @@ class BottlesBottleRow(Adw.ActionRow):
             if response != Gtk.ResponseType.ACCEPT:
                 return
 
-            self.window.show_toast(
-                _("Launching “{0}” in “{1}”…").format(
-                    dialog.get_file().get_basename(), self.config.Name
-                )
-            )
-
             path = dialog.get_file().get_path()
-            _executor = WineExecutor(self.config, exec_path=path)
-            RunAsync(_executor.run)
+
+            def proceed(sandbox_override, run_path):
+                self.window.show_toast(
+                    _("Launching “{0}” in “{1}”…").format(
+                        dialog.get_file().get_basename(), self.config.Name
+                    )
+                )
+                _executor = WineExecutor(
+                    self.config, exec_path=run_path, sandbox_override=sandbox_override
+                )
+                RunAsync(_executor.run)
+
+            guard_sandbox_launch(self.window, self.config, path, proceed)
 
         dialog = Gtk.FileChooserNative.new(
             title=_("Select Executable"),
@@ -142,6 +143,7 @@ class BottleView(Adw.Bin):
     entry_search = Gtk.Template.Child()
     search_bar = Gtk.Template.Child()
     no_bottles_found = Gtk.Template.Child()
+    update_banner = Gtk.Template.Child()
 
     # endregion
 
@@ -155,6 +157,7 @@ class BottleView(Adw.Bin):
         # connect signals
         self.btn_create.connect("clicked", self.window.show_add_view)
         self.entry_search.connect("changed", self.__search_bottles)
+        self.update_banner.connect("button-clicked", self.__show_bulk_update)
 
         # backend signals
         SignalManager.connect(
@@ -208,6 +211,47 @@ class BottleView(Adw.Bin):
             else:
                 self.group_steam.set_visible(True)
                 self.group_bottles.set_title(_("Your Bottles"))
+
+        self.__update_banner_state(local_bottles)
+
+    def __update_banner_state(self, local_bottles) -> None:
+        """Reveal the home banner when some bottles can update their components.
+
+        The component catalog is fetched asynchronously, so wait for it to be
+        organized in a worker thread before counting, then touch the banner
+        back on the main loop.
+        """
+        configs = list(local_bottles.values())
+
+        def count_updates():
+            EventManager.wait(Events.ComponentsOrganizing)
+            return sum(
+                1
+                for config in configs
+                if self.window.manager.get_component_updates(config)
+            )
+
+        RunAsync(count_updates, callback=self.__apply_banner_state)
+
+    def __apply_banner_state(self, count, error=False) -> None:
+        if not count:
+            self.update_banner.set_revealed(False)
+            return
+
+        self.update_banner.set_title(
+            ngettext(
+                "Component updates are available for {0} bottle.",
+                "Component updates are available for {0} bottles.",
+                count,
+            ).format(count)
+        )
+        self.update_banner.set_revealed(True)
+
+    def __show_bulk_update(self, *_args) -> None:
+        from bottles.frontend.windows.bulkupdate import BottlesBulkUpdateDialog
+
+        dialog = BottlesBulkUpdateDialog(self.window)
+        dialog.present(self.window)
 
     def show_page(self, page: str) -> None:
         if config := self.window.manager.local_bottles.get(page):

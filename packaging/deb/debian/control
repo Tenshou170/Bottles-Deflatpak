@@ -45,13 +45,10 @@ Depends: ${python3:Depends},
          python3-chardet,
          python3-gi,
          python3-markdown,
-         python3-orjson,
          python3-pathvalidate,
          python3-pycurl,
          python3-requests,
          python3-yaml,
-         python3-fvs,
-         python3-vkbasalt-cli,
          python3-charset-normalizer,
          python3-idna,
          python3-urllib3,
@@ -67,3 +64,7 @@ Description: Easily manage wine and proton prefixes (Native Fork)
  categorizing each software to your liking.
  .
  This is a native (non-Flatpak) version of Bottles.
+ .
+ Note: Bottle versioning (snapshots) requires the fvs2 binary from
+ https://github.com/fvs-lab/fvs2 — it is not yet packaged for Debian/Ubuntu.
+ The rest of Bottles works without it.

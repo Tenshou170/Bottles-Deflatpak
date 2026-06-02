@@ -15,10 +15,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import hashlib
+import os
+import time
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
+from bottles.backend.managers.data import DataManager, UserDataKeys
+from bottles.backend.managers.eagle import EagleManager
 from bottles.backend.managers.library import LibraryManager
 from bottles.backend.managers.steam import SteamManager
 from bottles.backend.models.result import Result
@@ -28,8 +33,10 @@ from bottles.backend.utils.threading import RunAsync
 from bottles.backend.wine.executor import WineExecutor
 from bottles.backend.wine.uninstaller import Uninstaller
 from bottles.backend.wine.winedbg import WineDbg
+from bottles.backend.wine.wineserver import WineServer
 from bottles.frontend.utils.gtk import GtkUtils
 from bottles.frontend.utils.playtime import PlaytimeService
+from bottles.frontend.utils.sandbox_guard import guard_sandbox_launch
 from bottles.frontend.windows.launchoptions import LaunchOptionsDialog
 from bottles.frontend.windows.playtimegraph import PlaytimeGraphDialog
 from bottles.frontend.windows.rename import RenameDialog
@@ -75,7 +82,7 @@ class ProgramEntry(Adw.ActionRow):
         self.config = config
         self.program = program
 
-        self.set_title(self.program["name"])
+        self.set_title(GLib.markup_escape_text(self.program["name"]))
 
         if is_steam:
             self.set_subtitle("Steam")
@@ -235,14 +242,182 @@ class ProgramEntry(Adw.ActionRow):
     def run_executable(self, _widget, with_terminal=False):
         self.pop_actions.popdown()  # workaround #1640
 
-        def _run():
-            WineExecutor.run_program(self.config, self.program, with_terminal)
-            self.pop_actions.popdown()  # workaround #1640
-            return True
+        path = self.program.get("path")
+        if (
+            not path
+            or not os.path.isfile(path)
+            or not self.window.settings.get_boolean("eagle-security-scan")
+        ):
+            # nothing to scan, or scanning disabled in settings; launch directly
+            return self.__launch_program(with_terminal)
 
-        self.window.show_toast(_('Launching "{0}"…').format(self.program["name"]))
-        RunAsync(_run, callback=self.__reset_buttons)
+        # scan for known malware/stealer patterns before launching; the scan
+        # runs off the main loop so the UI never freezes
+        def check():
+            return self.__eagle_security_check(path)
+
+        def after(findings, _error=False):
+            if findings:
+                self.__show_security_advisory(findings, path, with_terminal)
+            else:
+                self.__launch_program(with_terminal)
+
+        RunAsync(check, callback=after)
+
+    # below this many seconds, a program that has already exited most likely
+    # failed to start (crash / immediate close) rather than being used
+    __crash_threshold_seconds = 5
+
+    def __launch_program(self, with_terminal=False):
+        def proceed(sandbox_override, exec_path):
+            program = self.program
+            if exec_path and exec_path != self.program.get("path"):
+                program = {**self.program, "path": exec_path}
+            timing = {}
+
+            def _run():
+                timing["start"] = time.monotonic()
+                WineExecutor.run_program(
+                    self.config,
+                    program,
+                    with_terminal,
+                    sandbox_override=sandbox_override,
+                )
+                self.pop_actions.popdown()  # workaround #1640
+                return True
+
+            def done(result=False, error=False):
+                self.__reset_buttons(result, error)
+                start = timing.get("start")
+                path = self.program.get("path")
+                if (
+                    not with_terminal
+                    and self.window.settings.get_boolean("eagle-crash-detection")
+                    and start is not None
+                    and (time.monotonic() - start) < self.__crash_threshold_seconds
+                    and path
+                    and os.path.isfile(path)
+                ):
+                    self.__offer_eagle_scan(path)
+
+            self.window.show_toast(_('Launching "{0}"…').format(self.program["name"]))
+            RunAsync(_run, callback=done)
+            self.__reset_buttons()
+
+        guard_sandbox_launch(
+            self.window, self.config, self.program.get("path"), proceed
+        )
+
+    def __offer_eagle_scan(self, path):
+        dialog = Adw.MessageDialog.new(
+            self.window,
+            _("Did the app close unexpectedly?"),
+            _(
+                '"{0}" closed right after starting. Scan it with Eagle to check '
+                "for missing dependencies, packers or known threats?"
+            ).format(self.program["name"]),
+        )
+
+        icon = Gtk.Image.new_from_icon_name("com.usebottles.eagle-symbolic")
+        icon.set_pixel_size(48)
+        icon.set_margin_top(6)
+        dialog.set_extra_child(icon)
+
+        dialog.add_response("dismiss", _("Not Now"))
+        dialog.add_response("scan", _("Scan with Eagle"))
+        dialog.set_response_appearance("scan", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("scan")
+
+        def on_response(_dialog, response):
+            if response == "scan":
+                self.view_bottle.analyze_with_eagle(path)
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    @staticmethod
+    def __file_sha256(path):
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return None
+        return digest.hexdigest()
+
+    def __eagle_security_check(self, path):
+        """Worker thread: return Security findings for the program, or [] if it
+        is clean (cached by size+mtime) or the user has trusted its hash."""
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return []
+        signature = {"size": stat.st_size, "mtime": int(stat.st_mtime)}
+
+        cache = self.program.get("eagle_scan") or {}
+        if (
+            cache.get("clean")
+            and cache.get("size") == signature["size"]
+            and cache.get("mtime") == signature["mtime"]
+        ):
+            return []
+
+        findings = EagleManager(self.config).security_scan(path)
+        if not findings:
+            # remember the clean result so we don't rescan an unchanged file
+            self.program["eagle_scan"] = {**signature, "clean": True}
+            self.config = self.manager.update_config(
+                config=self.config,
+                key=self.program["id"],
+                value=self.program,
+                scope="External_Programs",
+            ).data["config"]
+            return []
+
+        # flagged: allow silently if the user previously trusted this exact file
+        digest = self.__file_sha256(path)
+        if digest and digest in (
+            DataManager().get(UserDataKeys.TrustedExecutables, []) or []
+        ):
+            return []
+        return findings
+
+    def __show_security_advisory(self, findings, path, with_terminal):
         self.__reset_buttons()
+        names = ", ".join(dict.fromkeys(f["name"] for f in findings))
+
+        dialog = Adw.MessageDialog.new(
+            self.window,
+            _("Potential threat detected"),
+            _(
+                '"{0}" matches patterns associated with malware ({1}). Bottles '
+                "strongly advises against running it."
+            ).format(self.program["name"], names),
+        )
+        dialog.add_response("cancel", _("Do Not Run"))
+        dialog.add_response("run", _("Run Anyway"))
+        dialog.set_response_appearance("run", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        trust_check = Gtk.CheckButton.new_with_label(
+            _("Trust this file and do not warn again")
+        )
+        dialog.set_extra_child(trust_check)
+
+        def on_response(_dialog, response):
+            if response != "run":
+                return
+            if trust_check.get_active():
+                digest = self.__file_sha256(path)
+                if digest:
+                    DataManager().set(
+                        UserDataKeys.TrustedExecutables, digest, of_type=list
+                    )
+            self.__launch_program(with_terminal)
+
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def run_steam(self, _widget):
         self.manager.steam_manager.launch_app(self.config.CompatData)
@@ -253,10 +428,19 @@ class ProgramEntry(Adw.ActionRow):
 
     def stop_process(self, widget):
         self.window.show_toast(_('Stopping "{0}"…').format(self.program["name"]))
-        winedbg = WineDbg(self.config)
         widget.set_sensitive(False)
-        winedbg.kill_process(self.executable)
-        self.__reset_buttons(True)
+
+        def task():
+            if self.config.Parameters.sandbox:
+                # winedbg cannot reach processes running inside the dedicated
+                # sandbox, so stop the bottle's sandbox launchers instead.
+                WineServer(self.config).force_kill()
+            else:
+                WineDbg(self.config).kill_process(self.executable)
+
+        # run off the main loop so the UI never freezes while the (possibly
+        # blocking) stop command runs
+        RunAsync(task, callback=self.__reset_buttons)
 
     @GtkUtils.run_in_main_loop
     def update_programs(self, _result=False, _error=False):

@@ -42,7 +42,6 @@ class HealthChecker:
     patool: bool = False
     icoextract: bool = False
     pefile: bool = False
-    orjson: bool = False
     markdown: bool = False
     xdpyinfo: bool = False
     ImageMagick: bool = False
@@ -71,11 +70,10 @@ class HealthChecker:
             "patool",
             "icoextract",
             "pefile",
-            "orjson",
             "markdown",
             "xdpyinfo",
             "convert",  # ImageMagick
-            "fvs2",  # FVS
+            "fvs2",  # FVS versioning backend
         ]
 
         for tool in tools:
@@ -86,7 +84,7 @@ class HealthChecker:
                 key = "FVS"
 
             # Check for python modules or binaries
-            if tool in ["icoextract", "pefile", "orjson", "markdown", "patool"]:
+            if tool in ["icoextract", "pefile", "markdown", "patool"]:
                 try:
                     __import__(tool)
                     setattr(self, tool, True)
@@ -151,7 +149,7 @@ class HealthChecker:
 
     def get_results(self, plain: bool = False):
         results = {
-            "Official Package": False,
+            "Build": "native",
             "Version": APP_VERSION,
             "DE/WM": self.desktop,
             "Display": {
@@ -170,7 +168,6 @@ class HealthChecker:
                 "patool": self.patool,
                 "icoextract": self.icoextract,
                 "pefile": self.pefile,
-                "orjson": self.orjson,
                 "markdown": self.markdown,
                 "xdpyinfo": self.xdpyinfo,
                 "ImageMagick": self.ImageMagick,

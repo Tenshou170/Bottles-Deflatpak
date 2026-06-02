@@ -1,3 +1,15 @@
+bottles-deflatpak (64.1) unstable; urgency=medium
+
+  * Sync with upstream 64.1.
+  * Eagle malware/stealer scanner with crash-detection prompt.
+  * Bulk bottle component update dialog.
+  * Dynamic sandbox guard for programs outside the bottle prefix.
+  * NTsync support (kernel /dev/ntsync + Wine >= 10).
+  * Winebridge update dialog on startup.
+  * Various upstream bugfixes.
+
+ -- Tenshou Zmeyev <tenshou170@gmail.com>  Tue, 02 Jun 2026 21:38:00 +0600
+
 bottles-deflatpak (63.2) unstable; urgency=medium
 
   * Sync with upstream 63.2 base.

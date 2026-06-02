@@ -17,10 +17,9 @@
 
 import contextlib
 import urllib.request
-import webbrowser
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gio, Gtk
 
 from bottles.backend.utils import json
 
@@ -38,11 +37,7 @@ class SimilarReportEntry(Adw.ActionRow):
 
     @staticmethod
     def __on_btn_report_clicked(button, report):
-        """
-        This function opens the report in the default browser, it will
-        use the active instance if there is one.
-        """
-        webbrowser.open(report["html_url"])
+        Gio.AppInfo.launch_default_for_uri(report["html_url"], None)
 
 
 @Gtk.Template(resource_path="/com/usebottles/bottles/dialog-crash-report.ui")
@@ -141,7 +136,7 @@ class CrashReportDialog(Adw.Window):
         if there are no similar reports.
         """
         similar_issues = []
-        api_url = "https://api.github.com/repos/THShafi170/Bottles-Deflatpak/issues?filter=all&state=all"
+        api_url = "https://api.github.com/repos/Tenshou170/Bottles-Deflatpak/issues?filter=all&state=all"
         with contextlib.suppress(
             urllib.error.HTTPError,
             urllib.error.URLError,
@@ -162,10 +157,6 @@ class CrashReportDialog(Adw.Window):
     """Run executable with args"""
 
     def __open_github(self, widget, log):
-        """
-        This function opens the page for creating a new issue on github,
-        with the form filled in with the report details and log.
-        """
-        webbrowser.open(
-            "https://github.com/THShafi170/Bottles-Deflatpak/issues/new/choose"
+        Gio.AppInfo.launch_default_for_uri(
+            "https://github.com/Tenshou170/Bottles-Deflatpak/issues/new/choose", None
         )

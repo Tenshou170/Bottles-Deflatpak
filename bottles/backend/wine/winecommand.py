@@ -21,7 +21,7 @@ from bottles.backend.managers.sandbox import SandboxManager
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.models.result import Result
 from bottles.backend.utils.display import DisplayUtils
-from bottles.backend.utils.generic import detect_encoding
+from bottles.backend.utils.generic import detect_encoding, is_ntsync_available
 from bottles.backend.utils.gpu import GPUUtils
 from bottles.backend.utils.manager import ManagerUtils
 from bottles.backend.utils.steam import SteamUtils
@@ -153,10 +153,15 @@ class WineCommand:
         cwd: Optional[str] = None,
         umu_id: str = "none",
         umu_store: str = "none",
+        sandbox_override: Optional[str] = None,
     ):
         _environment = environment.copy()
         self.config = self._get_config(config)
         self.minimal = minimal
+        # Per-launch override of the dedicated sandbox decided in the config:
+        #   None  -> follow the bottle setting
+        #   "off" -> run this launch without the dedicated sandbox
+        self.sandbox_override = sandbox_override
         self.arguments = arguments
         self.cwd = self._get_cwd(cwd)
         self.umu_id = umu_id
@@ -295,7 +300,12 @@ class WineCommand:
 
         # Language
         if config.Language != "sys":
-            env.add("LC_ALL", config.Language)
+            # ensure an encoding is set (e.g. zh_CN -> zh_CN.UTF-8), otherwise
+            # wine renders non-Latin text as garbage
+            language = config.Language
+            if "." not in language:
+                language = f"{language}.UTF-8"
+            env.add("LC_ALL", language)
 
         # Bottle DLL_Overrides
         if config.DLL_Overrides:
@@ -384,13 +394,10 @@ class WineCommand:
         if params.dxvk and not return_steam_env:
             env.add("WINE_LARGE_ADDRESS_AWARE", "1")
             env.add(
-                "DXVK_STATE_CACHE_PATH", os.path.join(bottle, "cache", "dxvk_state")
+                "DXVK_SHADER_CACHE_PATH", os.path.join(bottle, "cache", "dxvk_shader")
             )
             env.add("STAGING_SHARED_MEMORY", "1")
             env.add("__GL_SHADER_DISK_CACHE", "1")
-            env.add(
-                "__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1"
-            )  # should not be needed anymore
             env.add(
                 "__GL_SHADER_DISK_CACHE_PATH",
                 os.path.join(bottle, "cache", "gl_shader"),
@@ -458,11 +465,21 @@ class WineCommand:
         if params.sync == "fsync":
             env.add("WINEFSYNC", "1")
 
-        # NTsync environment variable (Proton only)
-        if params.sync == "ntsync" and (
-            SteamUtils.is_proton(self.runner) or params.use_umu
-        ):
-            env.add("PROTON_USE_NTSYNC", "1")
+        # NTsync environment variable — requires kernel device + Wine >= 10
+        if params.sync == "ntsync":
+            from bottles.backend.utils.generic import is_ntsync_available
+
+            if is_ntsync_available(self.runner):
+                env.add("WINENTSYNC", "1")
+                # Proton also honours PROTON_USE_NTSYNC when using umu
+                if SteamUtils.is_proton(self.runner) or params.use_umu:
+                    env.add("PROTON_USE_NTSYNC", "1")
+            else:
+                logging.warning(
+                    "ntsync requested but unavailable (missing /dev/ntsync or "
+                    "runner too old), falling back to fsync"
+                )
+                env.add("WINEFSYNC", "1")
 
         # Wine debug level
         if not return_steam_env:
@@ -630,9 +647,15 @@ class WineCommand:
                     command = f"mangohud {command}"
 
             if gamescope_available and self.gamescope_activated:
-                gamescope_run = tempfile.NamedTemporaryFile(mode="w", suffix=".sh").name
+                # Write the script into Bottles' temp dir (shared with the
+                # dedicated sandbox) instead of the system /tmp, otherwise
+                # Gamescope running inside the sandbox cannot see it.
+                os.makedirs(Paths.temp, exist_ok=True)
+                gamescope_run = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".sh", dir=Paths.temp
+                ).name
 
-                # Create temporary sh script in /tmp where Gamescope will execute it
+                # Create the sh script where Gamescope will execute it
                 file = ["#!/usr/bin/env sh\n"]
                 file.append(f"{command} $@")
                 if mangohud_available and params.mangohud:
@@ -795,17 +818,45 @@ class WineCommand:
         )
 
     def _get_sandbox_manager(self) -> SandboxManager:
-        share_paths_rw = [ManagerUtils.get_bottle_path(self.config)]
+        # Steam/Proton runners live outside Paths.runners (in the Steam data
+        # directory) and rely on their associated Steam Linux Runtime. Expose
+        # the runner root and that runtime so the runtime's own bwrap can find
+        # its entry point inside the dedicated sandbox. Symlinks are resolved so
+        # the real target gets shared, not just the link.
+        share_paths_ro = [Paths.runners, Paths.temp]
+
+        runner_root = (
+            self.config.RunnerPath
+            if self.config.Environment == "Steam" and self.config.RunnerPath
+            else ManagerUtils.get_runner_path(self.config.Runner)
+        )
+        for extra in (runner_root, self.runner_runtime):
+            if extra and not str(extra).startswith("sys-"):
+                share_paths_ro.append(os.path.realpath(extra))
+
+        # Also expose any caller-specified read-only paths from the bottle config.
+        share_paths_ro.extend(self.config.Sandbox.share_paths_ro)
+
+        bottle_path = ManagerUtils.get_bottle_path(self.config)
+        share_paths_rw = [bottle_path]
         share_paths_rw.extend(self.config.Sandbox.share_paths_rw)
 
-        share_paths_ro = [p for p in [Paths.runners, Paths.temp] if p]
-        share_paths_ro.extend(self.config.Sandbox.share_paths_ro)
+        # Resolve the working directory to a real path in case it is a symlink.
+        # If it is not a usable directory, fall back to the bottle path which is
+        # always present and already exposed read-write above.
+        chdir = os.path.realpath(self.cwd) if self.cwd else bottle_path
+        if not chdir or not os.path.isdir(chdir):
+            logging.warning(
+                f"Working directory '{self.cwd}' is not usable inside the "
+                "dedicated sandbox, falling back to the bottle path."
+            )
+            chdir = bottle_path
 
         return SandboxManager(
             envs=self.env,
-            chdir=self.cwd,
+            chdir=chdir,
             share_paths_rw=share_paths_rw,
-            share_paths_ro=share_paths_ro,
+            share_paths_ro=[p for p in share_paths_ro if p],
             share_net=self.config.Sandbox.share_net,
             share_sound=self.config.Sandbox.share_sound,
             share_host_ro=self.config.Sandbox.share_host_ro,
@@ -832,9 +883,15 @@ class WineCommand:
         if vmtouch_available and self.config.Parameters.vmtouch and not self.terminal:
             self._vmtouch_preload()
 
-        sandbox = (
-            self._get_sandbox_manager() if self.config.Parameters.sandbox else None
-        )
+        use_sandbox = self.config.Parameters.sandbox
+        if self.sandbox_override == "off":
+            use_sandbox = False
+            logging.warning(
+                "Launching without the dedicated sandbox on user request: the "
+                "target is outside the bottle and cannot be reached otherwise.",
+                jn=True,
+            )
+        sandbox = self._get_sandbox_manager() if use_sandbox else None
 
         # run command in external terminal if terminal is True
         if self.terminal:

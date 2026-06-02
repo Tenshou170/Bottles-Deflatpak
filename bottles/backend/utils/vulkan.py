@@ -82,10 +82,9 @@ class VulkanUtils:
     def check_support() -> bool:
         """
         Return True if Vulkan is actually functional on this system.
-        Uses `vulkaninfo --summary` for a lightweight probe that works both
-        on the host and inside the Flatpak sandbox.  Checking only for ICD
-        loader files is not reliable inside Flatpak because the runtime may
-        ship generic loaders even when the GPU does not support Vulkan.
+        Uses `vulkaninfo --summary` for a lightweight probe. Checking only
+        for ICD loader files is not reliable because the system may ship
+        generic loaders even when the GPU does not support Vulkan.
         """
         if shutil.which("vulkaninfo") is None:
             return False

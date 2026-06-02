@@ -1,7 +1,7 @@
 Name:       bottles-deflatpak
-Version:    63.2
+Version:    64.1
 Release:    1
-Summary:    Run Windows in a Bottle (Native fork)
+Summary:    Run Windows in a Bottle (native fork, no Flatpak)
 Provides:   bottles = %{version}-%{release}
 Conflicts:  bottles
 Obsoletes:  bottles < %{version}-%{release}
@@ -36,6 +36,10 @@ Requires:       ImageMagick             %dnl # needed for icon conversion
 Requires:       libportal
 Requires:       bubblewrap              %dnl # needed for native sandboxing
 Requires:       umu-launcher            %dnl # needed for UMU support
+# fvs2 is the versioning backend (Go binary). It is not yet in Fedora/RHEL
+# repositories; install it manually from https://github.com/fvs-lab/fvs2
+# Versioning will be unavailable without it but the rest of Bottles works fine.
+# Recommends: fvs2
 
 # Use `generate_requires.sh` to generate Python runtime dependencies
 # using upstream's `requirements.txt`, which is included in the tarball,
@@ -48,15 +52,6 @@ Requires:       python3dist(markdown)
 Requires:       python3dist(icoextract)
 Requires:       python3dist(patool)
 Requires:       python3dist(pathvalidate)
-Requires:       python3dist(fvs)
-Requires:       python3dist(orjson)
-Requires:       python3dist(vkbasalt-cli)
-Requires:       python3dist(pycairo)
-Requires:       python3dist(pygobject)
-Requires:       python3dist(charset-normalizer)
-Requires:       python3dist(idna)
-Requires:       python3dist(urllib3)
-Requires:       python3dist(certifi)
 Requires:       python3dist(pefile)
 Requires:       python3dist(yara-python)
 
@@ -138,6 +133,15 @@ desktop-file-validate %buildroot%_datadir/applications/*.desktop
 
 
 %changelog
+* Tue Jun 02 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 64.1-1
+- Sync with upstream 64.1
+- Eagle malware/stealer scanner with crash-detection prompt
+- Bulk bottle component update dialog
+- Dynamic sandbox guard for programs outside the bottle prefix
+- NTsync support (kernel /dev/ntsync + Wine >= 10)
+- winebridge update dialog on startup
+- Various upstream bugfixes
+
 * Thu Apr 02 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 63.2-1
 - Sync with upstream 63.2 base
 - Deep nativization: optimized hardware discovery and native path discovery

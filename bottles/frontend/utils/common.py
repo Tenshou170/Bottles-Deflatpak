@@ -15,8 +15,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import webbrowser
+from gi.repository import Gio
 
 
 def open_doc_url(widget, page):
-    webbrowser.open_new_tab(f"https://docs.usebottles.com/{page}")
+    Gio.AppInfo.launch_default_for_uri(f"https://docs.usebottles.com/{page}", None)

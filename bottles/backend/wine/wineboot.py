@@ -23,6 +23,13 @@ class WineBoot(WineProgram):
             "WINEDLLOVERRIDES": "winemenubuilder=d",
         }
 
+        # Under a dedicated bwrap sandbox the Wine processes are children of
+        # the sandbox launcher. Kill the tracked launcher process groups
+        # directly when stopping, since wineboot/wineserver cannot reach them
+        # across the namespace boundary.
+        if status in (-1, 0) and self.config.Parameters.sandbox:
+            self.__terminate_sandbox()
+
         if status == 0 and not WineServer(self.config).is_alive():
             logging.info("There is no running wineserver.")
             return
@@ -62,7 +69,18 @@ class WineBoot(WineProgram):
     def init(self):
         return self.send_status(4)
 
+    def __terminate_sandbox(self):
+        from bottles.backend.managers.sandbox import SandboxManager
+        from bottles.backend.utils.manager import ManagerUtils
+
+        prefix = ManagerUtils.get_bottle_path(self.config)
+        killed = SandboxManager.terminate_prefix(prefix)
+        if killed:
+            logging.info(f"Terminated {killed} sandbox launcher(s) for the bottle.")
+
     def nv_stop_all_processes(self):
+        if self.config.Parameters.sandbox:
+            self.__terminate_sandbox()
         try:
             for pid in os.listdir("/proc"):
                 if pid.isdigit():

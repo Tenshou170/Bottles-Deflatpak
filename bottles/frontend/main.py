@@ -18,7 +18,6 @@
 import gettext
 import locale
 import sys
-import webbrowser
 from os import path
 
 import gi
@@ -259,6 +258,14 @@ class Bottles(Adw.Application):
         """
         Adw.Application.do_startup(self)
 
+        # log the same environment summary shown in the GUI debug info, so a
+        # terminal run is enough to see what the user is running on
+        try:
+            logging.info(f"Bottles {APP_VERSION}")
+            logging.info(HealthChecker().get_results(plain=True))
+        except Exception as e:
+            logging.debug(f"Could not collect startup environment info: {e}")
+
     def do_activate(self):
         """
         This function is called when the application is activated.
@@ -302,14 +309,10 @@ class Bottles(Adw.Application):
 
     @staticmethod
     def __help(action=None, param=None):
-        """
-        This function open the documentation in the user's default browser.
-        It is used by the [F1] shortcut.
-        """
         logging.info(
             _("[Help] request received."),
         )
-        webbrowser.open_new_tab("https://docs.usebottles.com")
+        Gio.AppInfo.launch_default_for_uri("https://docs.usebottles.com", None)
 
     def __refresh(self, action=None, param=None):
         """
@@ -376,7 +379,6 @@ class Bottles(Adw.Application):
         about_dialog.set_translator_credits(_("translator_credits"))
         about_dialog.set_artists(artists)
         about_dialog.set_debug_info(HealthChecker().get_results(plain=True))
-        about_dialog.add_link(_("Donate"), "https://usebottles.com/funding")
         about_dialog.set_copyright(
             _("Copyright © 2017 {developer_name}").format(
                 developer_name=about_dialog.get_developer_name()

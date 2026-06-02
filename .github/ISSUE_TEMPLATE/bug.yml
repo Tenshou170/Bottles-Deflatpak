@@ -12,8 +12,8 @@ body:
         **Bottles is a manager. If a program doesn't work, it's a Wine/Proton issue, NOT a Bottles bug.**
         Please visit [WineHQ](https://www.winehq.org) and [ProtonDB](https://www.protondb.com).
 
-        ## 🙅 NO ISSUES FOR NON-FLATHUB PACKAGES
-        **We ONLY support non-Flatpak packages (RPM, DEB, source, Nix, etc.).**
+        ## 🙅 ONLY NATIVE (NON-FLATPAK) PACKAGES SUPPORTED
+        **This fork (Bottles-Deflatpak) does NOT ship a Flatpak. We support source builds, RPM, DEB, Arch, and Nix packages only.**
 
         ```text
         *******************************************************************************
@@ -25,8 +25,8 @@ body:
         *  1. DO NOT OPEN ISSUES FOR WINDOWS PROGRAMS NOT WORKING IN BOTTLES!         *
         *     (This is usually a Wine/Proton problem, NOT a Bottles bug)              *
         *                                                                             *
-        *  2. DO NOT OPEN ISSUES FOR BUGS IN THE FLATPAK PACKAGE!                     *
-        *     (This fork does NOT support the Flatpak package)                       *
+        *  2. DO NOT OPEN ISSUES IF YOU ARE USING THE UPSTREAM FLATPAK PACKAGE!       *
+        *     (This fork does NOT support or ship a Flatpak package)                 *
         *                                                                             *
         *******************************************************************************
         ```
@@ -62,13 +62,15 @@ body:
     id: package
     attributes:
       label: Package
-
-
       description: |
-        How did you install Bottles?
+        How did you install Bottles-Deflatpak?
       options:
-        - Source
-        - Distribution Package (RPM/DEB)
+        - Source (meson build)
+        - Arch Linux (.pkg.tar.zst / AUR)
+        - Debian / Ubuntu (.deb)
+        - Fedora / RHEL (.rpm)
+        - Nix / NixOS (Flake)
+        - Universal tarball (.tar.gz)
         - Other
     validations:
       required: true
@@ -118,7 +120,7 @@ body:
             Version: 5.16.9-200.fc35.x86_64
         Distro:
             Name: GNOME
-            Version: '"41 (Flatpak runtime)"'
+            Version: '"41"'
         Tools:
             cabextract: true
             p7zip: true
@@ -135,25 +137,25 @@ body:
       description: If applicable, run `bottles`, reproduce the issue and paste the logs here.
       render: shell
       placeholder: |
-        [Errno 2] No such file or directory: '/home/USER/.var/app/com.usebottles.bottles/data/bottles/bottles/Opera-GX__185/bottle.yml'  File "/app/share/bottles/bottles/frontend/utils/threading.py", line 61, in __target
+        [Errno 2] No such file or directory: '/home/USER/.local/share/bottles/bottles/Opera-GX__185/bottle.yml'  File "/usr/share/bottles/bottles/frontend/utils/threading.py", line 61, in __target
             result = self.task_func(*args, **kwargs)
 
-          File "/app/share/bottles/bottles/frontend/windows/main_window.py", line 194, in get_manager
+          File "/usr/share/bottles/bottles/frontend/windows/main_window.py", line 194, in get_manager
             mng = Manager(window=window, repo_fn_update=repo_fn_update)
 
-          File "/app/share/bottles/bottles/backend/managers/manager.py", line 135, in __init__
+          File "/usr/share/bottles/bottles/backend/managers/manager.py", line 135, in __init__
             times.update(self.checks(install_latest=False, first_run=True).data)
 
-          File "/app/share/bottles/bottles/backend/managers/manager.py", line 189, in checks
+          File "/usr/share/bottles/bottles/backend/managers/manager.py", line 189, in checks
             self.check_bottles()
 
-          File "/app/share/bottles/bottles/backend/managers/manager.py", line 804, in check_bottles
+          File "/usr/share/bottles/bottles/backend/managers/manager.py", line 804, in check_bottles
             process_bottle(b)
 
-          File "/app/share/bottles/bottles/backend/managers/manager.py", line 758, in process_bottle
+          File "/usr/share/bottles/bottles/backend/managers/manager.py", line 758, in process_bottle
             self.update_config(
 
-          File "/app/share/bottles/bottles/backend/managers/manager.py", line 874, in update_config
+          File "/usr/share/bottles/bottles/backend/managers/manager.py", line 874, in update_config
             with open(os.path.join(bottle_path, "bottle.yml"), "w") as conf_file
 
   - type: textarea

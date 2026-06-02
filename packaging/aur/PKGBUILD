@@ -3,9 +3,9 @@
 
 pkgname=bottles-deflatpak
 _pkgname=Bottles-Deflatpak
-pkgver=63.2
+pkgver=64.1
 pkgrel=1
-pkgdesc='Easily manage wine and proton prefix (Native Deflatpak version)'
+pkgdesc='Easily manage Wine and Proton prefixes (native fork without Flatpak)'
 arch=(any)
 url="https://github.com/Tenshou170/Bottles-Deflatpak"
 license=(GPL-3.0-only)
@@ -21,35 +21,37 @@ depends=(
   icoextract
   imagemagick
   libadwaita
+  libportal-gtk4
   p7zip
   patool
   python
   python-chardet
-  python-fvs
   python-gobject
   python-markdown
-  python-orjson
   python-pathvalidate
+  python-pefile
   python-pycurl
   python-requests
   python-yaml
-  webkit2gtk
-  xorg-xdpyinfo
+  python-yara
   vkbasalt-cli
   bubblewrap
+  fvs2
   umu-launcher
-  python-yara
-  libportal-gtk4
+  xorg-xdpyinfo
 )
 optdepends=(
-  gvfs
-  lib32-gamemode
-  lib32-gnutls
-  lib32-vkd3d
-  lib32-vulkan-icd-loader
-  vkd3d
-  vulkan-icd-loader
-  wine
+  'gvfs: GVFS integration'
+  'lib32-gamemode: 32-bit GameMode support'
+  'lib32-gnutls: 32-bit TLS support for Wine'
+  'lib32-vkd3d: 32-bit VKD3D support'
+  'lib32-vulkan-icd-loader: 32-bit Vulkan support'
+  'vkd3d: VKD3D support'
+  'vulkan-icd-loader: Vulkan support'
+  'wine: Wine runner'
+  'gamescope: Gamescope compositor'
+  'mangohud: Performance overlay'
+  'vmtouch: File preloading'
 )
 makedepends=(
   blueprint-compiler

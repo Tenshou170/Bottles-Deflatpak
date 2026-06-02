@@ -63,11 +63,14 @@ class WineExecutor:
         program_winebridge: Optional[bool] = None,
         umu_id: str = "none",
         umu_store: str = "none",
+        sandbox_override: Optional[str] = None,
     ):
         logging.info("Launching an executable…")
         self.config = config
         self.umu_id = umu_id
         self.umu_store = umu_store
+        # Per-launch dedicated sandbox override (None / "off"); see WineCommand.
+        self.sandbox_override = sandbox_override
         self.__validate_path(exec_path)
 
         if monitoring is None:
@@ -134,8 +137,24 @@ class WineExecutor:
             else:
                 self.environment["WINEDLLOVERRIDES"] = ";".join(env_dll_overrides)
 
+    @staticmethod
+    def is_unreachable_in_sandbox(path: Optional[str]) -> bool:
+        """Return True if *path* is an XDG document portal path
+        (/run/user/<uid>/doc/<id>/...) that lives outside the bottle and
+        therefore cannot be reached inside the dedicated bwrap sandbox.
+        The frontend uses this to warn the user before launching."""
+        if not path:
+            return False
+        return "/run/user/" in path and "/doc/" in path
+
     @classmethod
-    def run_program(cls, config: BottleConfig, program: dict, terminal: bool = False):
+    def run_program(
+        cls,
+        config: BottleConfig,
+        program: dict,
+        terminal: bool = False,
+        sandbox_override: Optional[str] = None,
+    ):
         if program is None:
             logging.warning("The program entry is not well formatted.")
 
@@ -143,6 +162,10 @@ class WineExecutor:
 
         def _resolve(field: str):
             return cls._replace_placeholders((program or {}).get(field), placeholders)
+
+        arguments = _resolve("arguments")
+        if not (program or {}).get("arguments_enabled", True):
+            arguments = ""
 
         exec_path = (
             program.get("path_override")
@@ -163,7 +186,7 @@ class WineExecutor:
         return cls(
             config=config,
             exec_path=exec_path,
-            args=_resolve("arguments"),
+            args=arguments,
             pre_script=cls._replace_placeholders(
                 program.get("pre_script"), placeholders
             ),
@@ -182,6 +205,7 @@ class WineExecutor:
             program_winebridge=program.get("winebridge"),
             umu_id=UMUUtils.get_umu_id(program or {}),
             umu_store=UMUUtils.get_umu_store(program or {}),
+            sandbox_override=sandbox_override,
         ).run()
 
     @staticmethod
@@ -471,6 +495,7 @@ class WineExecutor:
             cwd=self.cwd,
             umu_id=self.umu_id,
             umu_store=self.umu_store,
+            sandbox_override=self.sandbox_override,
         )
         res = winecmd.run()
         self.__set_monitors()

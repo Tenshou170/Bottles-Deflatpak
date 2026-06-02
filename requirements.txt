@@ -8,8 +8,6 @@ Markdown==3.7
 icoextract==0.1.5
 patool==3.0.0
 pathvalidate==3.2.1
-FVS==0.3.4
-orjson>=3.11.0
 pycairo==1.27.0
 PyGObject>=3.54.0
 charset-normalizer==3.3.2

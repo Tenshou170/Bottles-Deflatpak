@@ -14,7 +14,7 @@ repos:
     -   id: check-added-large-files
 
 -   repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.2
+    rev: v0.15.15
     hooks:
     -   id: ruff
         args: [ "--fix" ]
@@ -25,9 +25,4 @@ repos:
     hooks:
     -   id: mypy
         args: ["--pretty"]
-        additional_dependencies: ["pygobject-stubs", "types-PyYAML", "types-Markdown", "types-requests", "types-pycurl", "types-chardet", "pytest-stub", "types-orjson", "pathvalidate", "requirements-parser", "icoextract", "fvs", "patool", "git+https://gitlab.com/TheEvilSkeleton/vkbasalt-cli.git@main", "types-freezegun"]
-
--   repo: https://github.com/PyCQA/autoflake
-    rev: v2.3.1
-    hooks:
-    -   id: autoflake
+        additional_dependencies: ["pygobject-stubs", "types-PyYAML", "types-Markdown", "types-requests", "types-pycurl", "types-chardet", "pytest-stub", "pathvalidate", "requirements-parser", "icoextract", "patool", "git+https://gitlab.com/TheEvilSkeleton/vkbasalt-cli.git@main", "types-freezegun"]

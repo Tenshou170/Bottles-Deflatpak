@@ -16,10 +16,9 @@
 #
 
 import contextlib
-import webbrowser
 from gettext import gettext as _
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gio, Gtk
 
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.models.result import Result
@@ -122,14 +121,10 @@ class DependencyEntry(Adw.ActionRow):
         ).present()
 
     def open_license(self, _widget):
-        """
-        This function pop up a dialog with the license
-        of the dependency
-        """
         manifest = self.manager.dependency_manager.get_dependency(
             name=self.dependency[0]
         )
-        webbrowser.open(manifest["License_url"])
+        Gio.AppInfo.launch_default_for_uri(manifest["License_url"], None)
 
     def install_dependency(self, _widget):
         """

@@ -443,7 +443,10 @@ class EagleView(Gtk.Box):
             if isinstance(item, dict) and item.get("severity") in ["high", "critical"]
         ]
 
-        all_alerts = warnings + messages + system_alerts
+        # Security findings (malware/stealer patterns) are surfaced as alerts
+        security_alerts = details.get("Security", [])
+
+        all_alerts = security_alerts + warnings + messages + system_alerts
 
         if all_alerts:
             self.group_warnings.set_visible(True)

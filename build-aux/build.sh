@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
+# build.sh — native Meson build helper for Bottles-Deflatpak
+# Mirrors what build-packages.sh does but keeps the build tree for
+# incremental rebuilds and development use.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MANIFEST="$SCRIPT_DIR/com.usebottles.bottles.Devel.json"
-BUILD_DIR="$PROJECT_DIR/build-dir"
-APP_ID="com.usebottles.bottles.Devel"
+BUILD_DIR="${PROJECT_DIR}/build"
+PREFIX="${PREFIX:-/usr}"
 
-echo "==> Building $APP_ID"
-echo "    Manifest: $MANIFEST"
-echo "    Build dir: $BUILD_DIR"
+echo "==> Configuring Bottles-Deflatpak"
+echo "    Project : ${PROJECT_DIR}"
+echo "    Build   : ${BUILD_DIR}"
+echo "    Prefix  : ${PREFIX}"
 
-host-spawn flatpak run org.flatpak.Builder \
-    --force-clean \
-    --disable-rofiles-fuse \
-    --user \
-    --install \
-    --state-dir "$PROJECT_DIR/.flatpak-builder" \
-    "$BUILD_DIR" \
-    "$MANIFEST"
+meson setup "${BUILD_DIR}" "${PROJECT_DIR}" \
+    --prefix="${PREFIX}" \
+    --wipe 2>/dev/null || meson setup "${BUILD_DIR}" "${PROJECT_DIR}" --prefix="${PREFIX}"
 
-echo "==> Build complete. Run with:"
-echo "    host-spawn flatpak run $APP_ID"
+echo "==> Building"
+ninja -C "${BUILD_DIR}"
+
+echo ""
+echo "==> Build complete."
+echo "    To install:  sudo ninja -C '${BUILD_DIR}' install"
+echo "    To run directly from the build tree, set:"
+echo "      export XDG_DATA_DIRS='${BUILD_DIR}/data:\$XDG_DATA_DIRS'"
+echo "      python3 '${PROJECT_DIR}/bottles/__init__.py'"

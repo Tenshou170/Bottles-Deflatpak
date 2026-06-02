@@ -36,6 +36,7 @@ class LaunchOptionsDialog(Adw.Window):
 
     # region Widgets
     entry_arguments = Gtk.Template.Child()
+    switch_arguments = Gtk.Template.Child()
     combo_path_mode = Gtk.Template.Child()
     str_list_path_mode = Gtk.Template.Child()
     entry_executable = Gtk.Template.Child()
@@ -118,6 +119,10 @@ class LaunchOptionsDialog(Adw.Window):
         if program.get("arguments") not in ["", None]:
             self.entry_arguments.set_text(program.get("arguments"))
 
+        arguments_enabled = program.get("arguments_enabled", True)
+        self.switch_arguments.set_active(arguments_enabled)
+        self.entry_arguments.set_sensitive(arguments_enabled)
+
         self.str_list_path_mode.splice(
             0,
             0,
@@ -156,6 +161,7 @@ class LaunchOptionsDialog(Adw.Window):
         self.btn_reset_defaults.connect("clicked", self.__reset_defaults)
         self.entry_arguments.connect("activate", self.__save)
         self.entry_executable.connect("changed", self.__executable_changed)
+        self.switch_arguments.connect("notify::active", self.__toggle_arguments)
 
         # set overrides status
         self.global_dxvk = program_dxvk = config.Parameters.dxvk
@@ -272,6 +278,7 @@ class LaunchOptionsDialog(Adw.Window):
         )
         self.__set_override("winebridge", program_winebridge, self.global_winebridge)
         self.program["arguments"] = self.entry_arguments.get_text()
+        self.program["arguments_enabled"] = self.switch_arguments.get_active()
 
         self.program["path_mode"] = self.combo_path_mode.get_selected()
 
@@ -311,6 +318,9 @@ class LaunchOptionsDialog(Adw.Window):
 
     def __save(self, *_args):
         GLib.idle_add(self.__idle_save)
+
+    def __toggle_arguments(self, *_args):
+        self.entry_arguments.set_sensitive(self.switch_arguments.get_active())
 
     def __choose_pre_script(self, *_args):
         def set_path(dialog, result):
