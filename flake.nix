@@ -2,7 +2,7 @@
   description = "Bottles (Deflatpak) - Run Windows Software on Linux natively, without Flatpak";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
