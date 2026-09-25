@@ -997,282 +997,403 @@ class ManagerUtils:
         if get_locales:
             return locales
 
-        return names
+        return names @ staticmethod
 
-    @staticmethod
-    def ensure_browser_helpers(runner_path: Optional[str] = None):
+    def build_browser_handoff_wrapper() -> str:
         """
-        Deploy decoupled browser handover and URL opener wrappers across helper directories,
-        user bin, and runner bin paths to ensure 100% compatibility for Chrome, Brave,
-        Chromium forks, and Firefox.
+        Return the POSIX sh script deployed as the browser handoff wrapper.
+
+        Wine prefixes resolve URL handlers through winebrowser, which shells
+        out to xdg-open (or a browser binary by name). Inside Bottles those
+        names resolve to this wrapper, which must hand the request over to
+        the host desktop session without leaking the Wine/Proton environment:
+        injected DLL overrides, Steam Runtime LD_LIBRARY_PATH and Vulkan
+        layer variables abort sandboxed Chromium browsers (Brave, Vivaldi,
+        Chromium, Edge, ...) on startup, and Wine's spoofed USER breaks
+        D-Bus activation.
+
+        Strategies, in order:
+          1. FreeDesktop OpenURI portal over the session bus
+          2. transient systemd --user unit over the session bus
+          3. desktop session launchers (kstart, gio open)
+          4. sanitized detached execution as a last resort
+
+        Strategies 1-2 are the important ones: they talk to the host session
+        bus, so the browser is launched by the host session manager — outside
+        the Wine process tree AND outside Bottles' bwrap namespace when the
+        sandbox binds the bus socket (the browser then never runs inside the
+        namespace, which is what aborts sandboxed Chromium browsers). When no
+        reachable bus socket exists they are skipped and strategy 4 runs the
+        browser in-place with a sanitized environment. The BOTTLES_SANDBOX
+        marker is recorded in handoff logs for diagnostics only.
+        Failures are appended to $XDG_STATE_HOME/bottles/browser-handoff.log
+        for diagnostics.
         """
-        if not os.path.isdir(Paths.helpers):
-            os.makedirs(Paths.helpers, exist_ok=True)
+        return r"""#!/bin/sh
+# Bottles browser handoff wrapper.
+# Invoked as xdg-open/winebrowser-adjacent names from inside a Wine prefix
+# (optionally inside Bottles' bwrap sandbox). Hands the request over to the
+# host desktop session with a clean environment.
+# NOTE: /bin/sh shebang on purpose — this script must be executable even
+# when PATH does not contain a usable directory.
 
-        xdg_open_wrapper = os.path.join(Paths.helpers, "xdg-open")
-        wrapper_content = """#!/usr/bin/env sh
-# Clean Wine/Proton runner environment before handing over to host browser/applications
+# POSIX parameter expansion instead of basename/dirname: this script must
+# work even when PATH is broken or stripped (a not-uncommon Wine state).
+CALLER="${0##*/}"
+INSIDE_SANDBOX="${BOTTLES_SANDBOX:-0}"  # recorded for diagnostics only
+case "$0" in
+    */*) SELF_ARG_DIR="${0%/*}" ;;
+    *) SELF_ARG_DIR="." ;;
+esac
+# Captured before the cleanup below: the DOS-path rewrite needs the prefix
+# to resolve dosdevices mappings, but WINEPREFIX itself must not leak into
+# the launched browser.
+ORIG_WINEPREFIX="$WINEPREFIX"
 
-# 1. Identify caller binary name
-CALLER="$(basename -- "$0")"
+# ---------------------------------------------------------------- logging
+HANDOFF_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/bottles/browser-handoff.log"
+log_handoff() {
+    # log_handoff <strategy> <status> <detail>
+    # Create the directory first: the >> redirection below is evaluated
+    # before the block would run, so it cannot create it itself.
+    mkdir -p "$(dirname -- "$HANDOFF_LOG")" 2>/dev/null || return
+    printf '%s caller=%s sandbox=%s strategy=%s status=%s uri=%s detail=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CALLER" "$INSIDE_SANDBOX" \
+            "$1" "$2" "${TARGET_URI:-none}" "$3" >> "$HANDOFF_LOG" 2>/dev/null
+}
 
-# 2. Convert DOS / Windows paths if passed from Wine (e.g. C:\\... or Z:\\...)
-CLEAN_ARGS=""
-for arg in "$@"; do
-    case "$arg" in
-        [A-Za-z]:[/\\]*)
-            if command -v winepath >/dev/null 2>&1; then
-                u_arg="$(winepath -u "$arg" 2>/dev/null)"
-                if [ -n "$u_arg" ]; then
-                    arg="$u_arg"
-                fi
-            fi
+# ------------------------------------------------- clean host environment
+# Wine/Proton/Steam-runtime injection variables abort sandboxed browsers
+# and break D-Bus activation; drop them before any handover. The wrapper
+# itself re-exports the session pieces it needs (display, bus, runtime dir).
+unset LD_LIBRARY_PATH LD_PRELOAD WINEDLLOVERRIDES
+unset WINEPREFIX WINEARCH WINEDEBUG WINELOADER WINESERVER WINEDLLPATH
+unset WINEESYNC WINEFSYNC WINENTSYNC WINE_USE_EGL WINE_MOVE_HACK
+unset WINE_DISABLE_FULLSCREEN_HACK WINE_LARGE_ADDRESS_AWARE
+unset STAGING_SHARED_MEMORY PROTON_USE_SECCOMP PROTON_NO_STEAMINPUT
+unset PROTON_USE_XALIA PROTON_LOG PROTON_LOG_DIR
+unset PROTON_EAC_RUNTIME PROTON_BATTLEYE_RUNTIME
+unset STEAM_COMPAT_DATA_PATH STEAM_COMPAT_CLIENT_INSTALL_PATH
+unset STEAM_COMPAT_INSTALL_PATH SteamVirtualGamepadInfo
+unset SteamAppId SteamGameId UMU_ID UMU_USE_STEAM
+unset VK_ICD_FILENAMES VK_LAYER_PATH VK_ADD_LAYER_PATH
+unset DXVK_CONFIG DXVK_CONFIG_FILE DXVK_HDR
+unset VKD3D_FRAME_RATE VKD3D_SHADER_CACHE_PATH DXVK_SHADER_CACHE_PATH
+unset DISABLE_LSFG DISABLE_LSFGVK LSFGVK_ENV LSFGVK_DLL_PATH
+unset LSFGVK_MULTIPLIER LSFGVK_FLOW_SCALE LSFGVK_PERFORMANCE_MODE
+unset LSFG_LEGACY LSFG_DLL_PATH LSFG_MULTIPLIER LSFG_FLOW_SCALE
+unset LSFG_PERFORMANCE_MODE SODA_OPENXR_RUNTIME
+unset FEX_APP_CONFIG FEX_APP_CONFIG_LOCATION
+unset GST_PLUGIN_PATH GST_PLUGIN_SYSTEM_PATH
+unset GAMEMODERUN GAMEMODEAUTO MANGOHUD MANGOHUD_CONFIG
+unset ENABLE_VKBASALT OBS_VKCAPTURE
+
+# Restore host identity: Wine spoofs USER/USERNAME (steamuser for Proton),
+# which breaks D-Bus services that key off the user.
+HOST_UID="$(id -u 2>/dev/null)"
+HOST_USER="$(id -un 2>/dev/null)"
+[ -n "$HOST_USER" ] && USER="$HOST_USER" && export USER
+[ -n "$HOST_USER" ] && LOGNAME="$HOST_USER" && export LOGNAME
+
+# Resolve the session bus socket, honouring an existing XDG_RUNTIME_DIR so
+# callers can point us at a controlled location (used by the test suite).
+if [ -n "$XDG_RUNTIME_DIR" ]; then
+    BUS_SOCKET="$XDG_RUNTIME_DIR/bus"
+else
+    BUS_SOCKET="/run/user/$HOST_UID/bus"
+    if [ -d "/run/user/$HOST_UID" ]; then
+        XDG_RUNTIME_DIR="/run/user/$HOST_UID"
+        export XDG_RUNTIME_DIR
+    fi
+fi
+if [ ! -S "$BUS_SOCKET" ] && [ -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ]; then
+    BUS_SOCKET="${DBUS_SESSION_BUS_ADDRESS#unix:path=}"
+fi
+if [ -S "$BUS_SOCKET" ] && [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS_SOCKET"
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+
+# -------------------------------------------------------------- arguments
+# Rewrite DOS-style paths (C:\..., Z:\...) to Unix paths through the
+# prefix's dosdevices mappings, falling back to winepath, then shell-quote
+# everything for the strategies below.
+rewrite_dos_path() {
+    case "$1" in
+        [A-Za-z]:[/\\]*) ;;
+        *)
+            printf '%s' "$1"
+            return
             ;;
     esac
-    if [ -z "$CLEAN_ARGS" ]; then
-        CLEAN_ARGS="'$arg'"
+    if [ -n "$ORIG_WINEPREFIX" ]; then
+        # POSIX-only path surgery: no cut/tr/sed — this runs before the
+        # clean PATH is built and stripped sandboxes may not have coreutils.
+        ch="${1%"${1#?}"}"
+        case "$ch" in
+            A) d=a ;; B) d=b ;; C) d=c ;; D) d=d ;; E) d=e ;; F) d=f ;;
+            G) d=g ;; H) d=h ;; I) d=i ;; J) d=j ;; K) d=k ;; L) d=l ;;
+            M) d=m ;; N) d=n ;; O) d=o ;; P) d=p ;; Q) d=q ;; R) d=r ;;
+            S) d=s ;; T) d=t ;; U) d=u ;; V) d=v ;; W) d=w ;; X) d=x ;;
+            Y) d=y ;; Z) d=z ;; *) d="$ch" ;;
+        esac
+        rest="${1#??}"
+        while :; do
+            case "$rest" in
+                *\\*) rest="${rest%%\\*}/${rest#*\\}" ;;
+                *) break ;;
+            esac
+        done
+        if [ -d "$ORIG_WINEPREFIX/dosdevices/$d:" ]; then
+            # resolve the dosdevices symlink without relying on readlink -f
+            # (not present everywhere; coreutils may not be reachable yet)
+            target="$(cd -P "$ORIG_WINEPREFIX/dosdevices/$d:" 2>/dev/null && pwd -P)"
+            if [ -n "$target" ]; then
+                printf '%s%s' "$target" "$rest"
+                return
+            fi
+        fi
+    fi
+    if command -v winepath >/dev/null 2>&1; then
+        u_arg="$(winepath -u "$1" 2>/dev/null)"
+        if [ -n "$u_arg" ]; then
+            printf '%s' "$u_arg"
+            return
+        fi
+    fi
+    printf '%s' "$1"
+}
+
+# Single-quote an argument for later eval-based strategies, escaping any
+# embedded quote as '\'' — pure POSIX, no external tools.
+quote_arg() {
+    rest="$1"
+    q=""
+    while :; do
+        case "$rest" in
+            *\'*)
+                q="$q${rest%%\'*}'\\''"
+                rest="${rest#*\'}"
+                ;;
+            *)
+                q="$q$rest"
+                break
+                ;;
+        esac
+    done
+    printf "'%s'" "$q"
+}
+
+QUOTED_ARGS=""
+for arg in "$@"; do
+    arg="$(rewrite_dos_path "$arg")"
+    if [ -z "$QUOTED_ARGS" ]; then
+        QUOTED_ARGS="$(quote_arg "$arg")"
     else
-        CLEAN_ARGS="$CLEAN_ARGS '$arg'"
+        QUOTED_ARGS="$QUOTED_ARGS $(quote_arg "$arg")"
     fi
 done
 
-# 3. Detect primary target URI / URL if present
 TARGET_URI=""
 for arg in "$@"; do
     case "$arg" in
-        http://*|https://*|mailto:*|tel:*|ftp://*|file://*|*://*)
+        [A-Za-z][A-Za-z0-9+.-]*://*|mailto:*|tel:*|magnet:*)
             TARGET_URI="$arg"
             break
             ;;
     esac
 done
-if [ -z "$TARGET_URI" ]; then
-    TARGET_URI="$1"
-fi
 
-# 4. Restore host user identity & runtime D-Bus session
-HOST_UID="$(id -u 2>/dev/null)"
-HOST_USER="$(id -un 2>/dev/null || whoami 2>/dev/null)"
-if [ -n "$HOST_USER" ]; then
-    export USER="$HOST_USER"
-    export USERNAME="$HOST_USER"
-    export LOGNAME="$HOST_USER"
-fi
-
-if [ -n "$HOST_UID" ]; then
-    if [ -z "$XDG_RUNTIME_DIR" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
-        if [ -d "/run/user/$HOST_UID" ]; then
-            export XDG_RUNTIME_DIR="/run/user/$HOST_UID"
+# ------------------------------------------------------------ host lookup
+SELF_DIR="$(CDPATH= cd -- "$SELF_ARG_DIR" && pwd)"
+find_host_xdg_open() {
+    # PATH first, so user/system overrides win; skip every entry that would
+    # resolve back to this very wrapper (helpers dir, runner bin aliases).
+    IFS=':'
+    for p in $PATH; do
+        [ -n "$p" ] || continue
+        [ -x "$p/xdg-open" ] || continue
+        [ "$p/xdg-open" -ef "$0" ] && continue
+        printf '%s' "$p/xdg-open"
+        return
+    done
+    unset IFS
+    # Absolute fallbacks for a wiped or hostile PATH.
+    for p in /usr/bin/xdg-open /usr/local/bin/xdg-open /bin/xdg-open; do
+        if [ -x "$p" ] && ! [ "$p" -ef "$0" ]; then
+            printf '%s' "$p"
+            return
         fi
-    fi
-    if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ ! -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ]; then
-        if [ -S "/run/user/$HOST_UID/bus" ]; then
-            export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$HOST_UID/bus"
-        fi
-    fi
-fi
+    done
+}
 
-# 5. Build clean host PATH ignoring helper directories
-SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 CLEAN_PATH=""
 IFS=':'
-for p in $PATH /usr/local/bin /usr/bin /bin /usr/bin/site_perl /usr/bin/vendor_perl /usr/bin/core_perl "$HOME/.nix-profile/bin" /nix/var/nix/profiles/default/bin; do
-    if [ "$p" != "$SELF_DIR" ] && [ "$p" != "$HOME/.local/share/bottles/helpers" ] && [ -d "$p" ]; then
-        case ":$CLEAN_PATH:" in
-            *:"$p":*) ;;
-            *)
-                if [ -z "$CLEAN_PATH" ]; then
-                    CLEAN_PATH="$p"
-                else
-                    CLEAN_PATH="$CLEAN_PATH:$p"
-                fi
-                ;;
-        esac
+for base in $PATH /usr/local/bin /usr/bin /bin /usr/local/sbin /usr/sbin /sbin; do
+    [ "$base" = "$SELF_DIR" ] && continue
+    [ -d "$base" ] || continue
+    case ":$CLEAN_PATH:" in
+        *":$base:"*) continue ;;
+    esac
+    if [ -z "$CLEAN_PATH" ]; then
+        CLEAN_PATH="$base"
+    else
+        CLEAN_PATH="$CLEAN_PATH:$base"
     fi
 done
 unset IFS
 export PATH="$CLEAN_PATH"
 
-# 6. Locate host xdg-open and specific host browser binary if applicable
-HOST_XDG_OPEN=""
-for p in /usr/bin/xdg-open /usr/local/bin/xdg-open /bin/xdg-open; do
-    if [ -x "$p" ] && [ "$p" != "$SELF_DIR/xdg-open" ]; then
-        HOST_XDG_OPEN="$p"
-        break
-    fi
-done
-if [ -z "$HOST_XDG_OPEN" ]; then
-    HOST_XDG_OPEN="$(command -v xdg-open 2>/dev/null)"
-fi
+HOST_XDG_OPEN="$(find_host_xdg_open)"
 
-HOST_BROWSER_BIN=""
+# Openers are routed to xdg-open; anything else (brave, firefox, ...) is a
+# browser invoked by name: prefer the real host binary, and fall back to
+# xdg-open (MIME default) when that browser is not installed on the host.
+TARGET_CMD=""
 case "$CALLER" in
-    xdg-open|gio|gnome-open|kde-open|kde-open5|kfmclient)
+    xdg-open|gio|gnome-open|kde-open|kde-open5|kfmclient|winebrowser)
+        TARGET_CMD="$HOST_XDG_OPEN"
         ;;
     *)
         IFS=':'
         for p in $CLEAN_PATH; do
-            if [ -x "$p/$CALLER" ] && [ "$p/$CALLER" != "$0" ]; then
-                HOST_BROWSER_BIN="$p/$CALLER"
+            # -ef: skip aliases that point back at this wrapper (the helpers
+            # dir is on PATH and symlinks every browser name to it)
+            if [ -x "$p/$CALLER" ] && ! [ "$p/$CALLER" -ef "$0" ]; then
+                TARGET_CMD="$p/$CALLER"
                 break
             fi
         done
         unset IFS
+        [ -z "$TARGET_CMD" ] && TARGET_CMD="$HOST_XDG_OPEN"
         ;;
 esac
 
-# 7. Strategy 1: FreeDesktop OpenURI Portal via D-Bus (Best for URLs & Handover)
-# Completely decouples from Wine process tree and launches host's default browser
-if [ -n "$TARGET_URI" ]; then
-    case "$TARGET_URI" in
-        http://*|https://*|mailto:*|tel:*|ftp://*|file://*|*://*)
-            if [ -n "$DBUS_SESSION_BUS_ADDRESS" ] || [ -S "/run/user/$HOST_UID/bus" ]; then
-                if command -v gdbus >/dev/null 2>&1; then
-                    if gdbus call --session \\
-                        --dest org.freedesktop.portal.Desktop \\
-                        --object-path /org/freedesktop/portal/desktop \\
-                        --method org.freedesktop.portal.OpenURI.OpenURI \\
-                        --timeout 5 \\
-                        "" "$TARGET_URI" "{}" >/dev/null 2>&1; then
-                        exit 0
-                    fi
-                elif command -v busctl >/dev/null 2>&1; then
-                    if busctl --user call \\
-                        org.freedesktop.portal.Desktop \\
-                        /org/freedesktop/portal/desktop \\
-                        org.freedesktop.portal.OpenURI \\
-                        OpenURI ssa\\{sv\\} "" "$TARGET_URI" 0 >/dev/null 2>&1; then
-                        exit 0
-                    fi
-                fi
-            fi
-            ;;
+# --------------------------------------------------------------- strategy 1
+# FreeDesktop OpenURI portal: fully decouples the browser from this process
+# tree and environment. Requires a reachable session bus and gdbus/busctl.
+try_portal() {
+    [ -n "$TARGET_URI" ] || return 1
+    if [ ! -S "$BUS_SOCKET" ] && [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+        return 1
+    fi
+    if command -v gdbus >/dev/null 2>&1; then
+        gdbus call --session \
+            --dest org.freedesktop.portal.Desktop \
+            --object-path /org/freedesktop/portal/desktop \
+            --method org.freedesktop.portal.OpenURI.OpenURI \
+            --timeout 5 \
+            "" "$TARGET_URI" "{}" >/dev/null 2>&1 || return 1
+    elif command -v busctl >/dev/null 2>&1; then
+        busctl --user call \
+            org.freedesktop.portal.Desktop \
+            /org/freedesktop/portal/desktop \
+            org.freedesktop.portal.OpenURI \
+            OpenURI ssa\\{sv\\} "" "$TARGET_URI" 0 >/dev/null 2>&1 || return 1
+    else
+        return 1
+    fi
+    log_handoff portal success ""
+    exit 0
+}
+try_portal || log_handoff portal skipped-or-failed "no-uri/bus/tool or denied"
+
+# --------------------------------------------------------------- strategy 2
+# Transient systemd user unit: fresh environment from the user manager and
+# outside the Wine process group, so browser sandboxing (setuid sandbox,
+# Crashpad) starts cleanly.
+try_systemd_run() {
+    [ -n "$TARGET_CMD" ] || return 1
+    command -v systemd-run >/dev/null 2>&1 || return 1
+    if [ ! -S "$BUS_SOCKET" ] && [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+        return 1
+    fi
+    SYSTEMD_ENV_ARGS="--setenv=PATH=$CLEAN_PATH"
+    [ -n "$DISPLAY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DISPLAY=$DISPLAY"
+    [ -n "$WAYLAND_DISPLAY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+    [ -n "$XDG_CURRENT_DESKTOP" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP"
+    [ -n "$DESKTOP_SESSION" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DESKTOP_SESSION=$DESKTOP_SESSION"
+    [ -n "$XAUTHORITY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XAUTHORITY=$XAUTHORITY"
+    [ -n "$XDG_SESSION_TYPE" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
+    [ -n "$XDG_RUNTIME_DIR" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+    [ -n "$DBUS_SESSION_BUS_ADDRESS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+    [ -n "$XDG_DATA_DIRS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_DATA_DIRS=$XDG_DATA_DIRS"
+    [ -n "$XDG_CONFIG_DIRS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_CONFIG_DIRS=$XDG_CONFIG_DIRS"
+    [ -n "$USER" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=USER=$USER"
+    [ -n "$HOME" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=HOME=$HOME"
+    eval "systemd-run --user --collect --slice=app.slice -q $SYSTEMD_ENV_ARGS \
+        \"\$TARGET_CMD\" $QUOTED_ARGS" >/dev/null 2>&1 || return 1
+    log_handoff systemd-run success ""
+    exit 0
+}
+try_systemd_run || log_handoff systemd-run skipped-or-failed "no bus/tool or spawn failed"
+
+# --------------------------------------------------------------- strategy 3
+# Desktop session launchers (KDE kstart, gio open).
+try_kstart() {
+    [ -n "$TARGET_CMD" ] || return 1
+    [ -S "$BUS_SOCKET" ] || return 1
+    case "$XDG_CURRENT_DESKTOP" in
+        [Kk][Dd][Ee]*) ;;
+        *) return 1 ;;
     esac
-fi
-
-# 8. Strategy 2: systemd-run --user (Clean transient unit in desktop cgroup)
-# Preserves GUI display environment and prevents Crashpad / seccomp / NO_NEW_PRIVS aborts
-TARGET_CMD="${HOST_BROWSER_BIN:-$HOST_XDG_OPEN}"
-
-if [ -n "$TARGET_CMD" ] && command -v systemd-run >/dev/null 2>&1; then
-    if [ -n "$DBUS_SESSION_BUS_ADDRESS" ] || [ -S "/run/user/$HOST_UID/bus" ]; then
-        SYSTEMD_ENV_ARGS="--setenv=PATH=$CLEAN_PATH"
-        [ -n "$DISPLAY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DISPLAY=$DISPLAY"
-        [ -n "$WAYLAND_DISPLAY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
-        [ -n "$XDG_CURRENT_DESKTOP" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP"
-        [ -n "$DESKTOP_SESSION" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DESKTOP_SESSION=$DESKTOP_SESSION"
-        [ -n "$XAUTHORITY" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XAUTHORITY=$XAUTHORITY"
-        [ -n "$XDG_SESSION_TYPE" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
-        [ -n "$XDG_RUNTIME_DIR" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-        [ -n "$DBUS_SESSION_BUS_ADDRESS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
-        [ -n "$XDG_DATA_DIRS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_DATA_DIRS=$XDG_DATA_DIRS"
-        [ -n "$XDG_CONFIG_DIRS" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=XDG_CONFIG_DIRS=$XDG_CONFIG_DIRS"
-        [ -n "$USER" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=USER=$USER"
-        [ -n "$HOME" ] && SYSTEMD_ENV_ARGS="$SYSTEMD_ENV_ARGS --setenv=HOME=$HOME"
-
-        if systemd-run --user --collect --slice=app.slice -q $SYSTEMD_ENV_ARGS "$TARGET_CMD" "$@" >/dev/null 2>&1; then
-            exit 0
-        fi
-    fi
-fi
-
-# 9. Clean environment for fallback methods (Unset all Wine / Proton / Graphics injection variables)
-unset LD_LIBRARY_PATH
-unset LD_PRELOAD
-unset WINEDLLOVERRIDES
-unset WINEPREFIX
-unset WINEARCH
-unset WINEDEBUG
-unset WINELOADER
-unset WINESERVER
-unset WINEDLLPATH
-unset WINEESYNC
-unset WINEFSYNC
-unset WINE_USE_EGL
-unset WINE_MOVE_HACK
-unset WINE_DISABLE_FULLSCREEN_HACK
-unset WINE_LARGE_ADDRESS_AWARE
-unset STAGING_SHARED_MEMORY
-unset PROTON_USE_SECCOMP
-unset PROTON_NO_STEAMINPUT
-unset PROTON_USE_XALIA
-unset PROTON_LOG
-unset PROTON_LOG_DIR
-unset PROTON_EAC_RUNTIME
-unset PROTON_BATTLEYE_RUNTIME
-unset STEAM_COMPAT_DATA_PATH
-unset STEAM_COMPAT_CLIENT_INSTALL_PATH
-unset STEAM_COMPAT_INSTALL_PATH
-unset SteamVirtualGamepadInfo
-unset SteamAppId
-unset SteamGameId
-unset UMU_ID
-unset UMU_USE_STEAM
-unset VK_ICD_FILENAMES
-unset VK_LAYER_PATH
-unset VK_ADD_LAYER_PATH
-unset DXVK_CONFIG
-unset DXVK_CONFIG_FILE
-unset DXVK_HDR
-unset VKD3D_FRAME_RATE
-unset VKD3D_SHADER_CACHE_PATH
-unset DXVK_SHADER_CACHE_PATH
-unset DISABLE_LSFG
-unset DISABLE_LSFGVK
-unset LSFGVK_ENV
-unset LSFGVK_DLL_PATH
-unset LSFGVK_MULTIPLIER
-unset LSFGVK_FLOW_SCALE
-unset LSFGVK_PERFORMANCE_MODE
-unset LSFG_LEGACY
-unset LSFG_DLL_PATH
-unset LSFG_MULTIPLIER
-unset LSFG_FLOW_SCALE
-unset LSFG_PERFORMANCE_MODE
-unset SODA_OPENXR_RUNTIME
-unset FEX_APP_CONFIG
-unset FEX_APP_CONFIG_LOCATION
-unset GST_PLUGIN_PATH
-unset GST_PLUGIN_SYSTEM_PATH
-unset GAMEMODERUN
-unset GAMEMODEAUTO
-unset MANGOHUD
-unset MANGOHUD_CONFIG
-unset ENABLE_VKBASALT
-unset OBS_VKCAPTURE
-
-# 10. Strategy 3: Desktop Environment session launchers (KDE kstart, gio)
-if [ -n "$TARGET_CMD" ]; then
     if command -v kstart6 >/dev/null 2>&1; then
-        if kstart6 "$TARGET_CMD" "$@" >/dev/null 2>&1; then
-            exit 0
-        fi
+        eval "kstart6 \"\$TARGET_CMD\" $QUOTED_ARGS" >/dev/null 2>&1 || return 1
     elif command -v kstart5 >/dev/null 2>&1; then
-        if kstart5 "$TARGET_CMD" "$@" >/dev/null 2>&1; then
-            exit 0
-        fi
+        eval "kstart5 \"\$TARGET_CMD\" $QUOTED_ARGS" >/dev/null 2>&1 || return 1
+    else
+        return 1
     fi
-fi
+    log_handoff kstart success ""
+    exit 0
+}
+try_kstart || true
 
-if [ -n "$TARGET_URI" ] && command -v gio >/dev/null 2>&1; then
+# gio's handler resolution needs the session bus (gvfs/dconf); without it
+# the call either fails or behaves unpredictably, so require the socket.
+if [ -n "$TARGET_URI" ] && [ -S "$BUS_SOCKET" ] && command -v gio >/dev/null 2>&1; then
     if gio open "$TARGET_URI" >/dev/null 2>&1; then
+        log_handoff gio success ""
         exit 0
     fi
 fi
 
-# 11. Strategy 4: Sanitized detached background execution
+# --------------------------------------------------------------- strategy 4
+# Sanitized detached execution. Works everywhere, including inside the
+# bwrap sandbox; the browser talks to whatever sockets are reachable there.
 if [ -n "$TARGET_CMD" ]; then
     if command -v setsid >/dev/null 2>&1; then
-        setsid "$TARGET_CMD" "$@" </dev/null >/dev/null 2>&1 &
-        exit 0
+        eval "setsid \"\$TARGET_CMD\" $QUOTED_ARGS" </dev/null >/dev/null 2>&1 &
     else
-        "$TARGET_CMD" "$@" </dev/null >/dev/null 2>&1 &
-        exit 0
+        eval "\"\$TARGET_CMD\" $QUOTED_ARGS" </dev/null >/dev/null 2>&1 &
     fi
+    log_handoff detached success ""
+    exit 0
 fi
 
+log_handoff none failure "no host target available"
 exit 1
 """
+
+    @staticmethod
+    def ensure_browser_helpers(runner_path: Optional[str] = None):
+        """
+        Deploy decoupled browser handoff and URL opener wrappers across helper
+        directories and runner bin paths to ensure compatibility for Chrome,
+        Brave, Chromium forks, and Firefox.
+
+        The wrapper is written once into Paths.helpers and symlinked under the
+        opener/browser names into every runner's bin directory, so Wine's
+        winebrowser resolves it through PATH inside the prefix. ~/.local/bin
+        is deliberately NOT touched: an earlier fork revision installed a copy
+        there, which shadowed the user's real xdg-open system-wide; legacy
+        copies left by that revision are removed on migration.
+        """
+        if not os.path.isdir(Paths.helpers):
+            os.makedirs(Paths.helpers, exist_ok=True)
+
+        xdg_open_wrapper = os.path.join(Paths.helpers, "xdg-open")
+        wrapper_content = ManagerUtils.build_browser_handoff_wrapper()
         helper_binaries = [
             "xdg-open",
             "gio",
@@ -1332,12 +1453,30 @@ exit 1
                     except OSError:
                         pass
 
-            user_bin = os.path.expanduser("~/.local/bin")
-            if os.path.isdir(user_bin):
-                user_xdg_open = os.path.join(user_bin, "xdg-open")
-                with open(user_xdg_open, "w", encoding="utf-8") as f:
-                    f.write(wrapper_content)
-                os.chmod(user_xdg_open, 0o755)
+            # Remove the legacy ~/.local/bin/xdg-open copy installed by older
+            # revisions, but only when it is our generated wrapper: never touch
+            # anything the user (or their distro) put there themselves.
+            legacy_user_wrapper = os.path.expanduser("~/.local/bin/xdg-open")
+            if os.path.isfile(legacy_user_wrapper) or os.path.islink(
+                legacy_user_wrapper
+            ):
+                try:
+                    with open(legacy_user_wrapper, encoding="utf-8") as f:
+                        head = f.read(64)
+                    if head.startswith("#!/usr/bin/env sh") and (
+                        "Bottles" in head
+                        or "Wine" in head
+                        or "winebrowser" in head
+                        or "Clean Wine" in head
+                        or "handoff" in head
+                    ):
+                        os.remove(legacy_user_wrapper)
+                        logging.info(
+                            "Removed legacy Bottles browser handoff wrapper from "
+                            "~/.local/bin/xdg-open."
+                        )
+                except OSError:
+                    pass
 
             target_dirs = []
             if runner_path and os.path.isdir(runner_path):

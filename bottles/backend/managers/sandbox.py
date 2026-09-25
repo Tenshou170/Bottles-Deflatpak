@@ -179,6 +179,11 @@ class SandboxManager:
             if os.path.exists(doc_socket):
                 args.extend(["--bind", doc_socket, doc_socket])
 
+            # Export the runtime dir itself so tools inside the sandbox can
+            # locate sockets by convention (bus, doc, pulse, pipewire). The
+            # browser handoff wrapper also uses it as its handoff log location.
+            args.extend(["--setenv", "XDG_RUNTIME_DIR", self.__xdg_runtime_dir])
+
         # Networking
         if self.share_net:
             args.append("--share-net")
@@ -306,6 +311,11 @@ class SandboxManager:
 
         if self.share_hidraw and self.supports_hidraw_devices():
             args.extend(["--dev-bind", "/dev/hidraw", "/dev/hidraw"])
+
+        # Mark the sandbox so helpers can detect that the host session bus is
+        # not reachable (the browser handoff wrapper skips portal/systemd-run
+        # strategies based on this flag instead of probing and failing).
+        args.extend(["--setenv", "BOTTLES_SANDBOX", "1"])
 
         return args
 
