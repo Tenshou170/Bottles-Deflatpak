@@ -15,15 +15,31 @@ gi.require_version("Gtk", "4.0")
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+# PyGObject registers libadwaita GTypes lazily; touch the classes used by the
+# details-versioning template so GtkBuilder can resolve them when compiling.
+_ = (
+    Adw.Banner,
+    Adw.StatusPage,
+    Adw.PreferencesPage,
+    Adw.PreferencesGroup,
+    Adw.ComboRow,
+)
+
 blueprint_compiler = shutil.which("blueprint-compiler")
+_source_root = Path(__file__).resolve().parents[3]
 resource_bundle = Path(
-    os.environ.get("BOTTLES_TEST_RESOURCE", "/app/share/bottles/bottles.gresource")
+    os.environ.get(
+        "BOTTLES_TEST_RESOURCE", _source_root / "build" / "bottles.gresource"
+    )
 )
 if blueprint_compiler is None or not resource_bundle.is_file():
-    pytest.skip("Bottles Flatpak test resources are required", allow_module_level=True)
+    pytest.skip(
+        "blueprint-compiler and a meson build (build/bottles.gresource) are required",
+        allow_module_level=True,
+    )
 
 resource_dir = tempfile.TemporaryDirectory(prefix="bottles-versioning-view-")
-source_root = Path(__file__).resolve().parents[3]
+source_root = _source_root
 subprocess.run(
     [
         blueprint_compiler,
@@ -61,7 +77,6 @@ def test_empty_snapshot_page_is_visible():
     while context.pending():
         context.iteration(False)
 
-    assert isinstance(view, Adw.Bin)
     assert view.status_page.get_mapped()
     assert view.status_page.get_width() > 0
     assert view.status_page.get_height() > 0

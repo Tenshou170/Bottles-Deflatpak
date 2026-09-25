@@ -136,9 +136,7 @@ def test_steam_path_skips_directory_without_steam_data(tmp_path, monkeypatch):
 
 
 def test_steam_path_keeps_install_without_user_data(tmp_path, monkeypatch):
-    steam_root = (
-        tmp_path / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam"
-    )
+    steam_root = tmp_path / ".local" / "share" / "Steam"
     (steam_root / "ubuntu12_32").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -196,11 +194,10 @@ def test_umu_shortcut_uses_umu_cli(tmp_path, monkeypatch):
 
 
 def test_list_compatibility_tools_keeps_only_valid_proton(tmp_path, monkeypatch):
-    flatpak_steam = (
-        tmp_path / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam"
-    )
-    flatpak_steam.mkdir(parents=True)
+    # Native Steam installation takes precedence; Flatpak Steam directories
+    # are not part of the search paths in the native (deflatpak) build.
     steam_root = tmp_path / ".local" / "share" / "Steam"
+    steam_root.mkdir(parents=True)
     tools = steam_root / "compatibilitytools.d"
     proton = tools / "GE-Proton10-4"
     proton.mkdir(parents=True)
@@ -219,7 +216,7 @@ def test_list_compatibility_tools_keeps_only_valid_proton(tmp_path, monkeypatch)
 
     manager = SteamManager(check_only=True)
 
-    assert manager.steam_path == str(flatpak_steam)
+    assert manager.steam_path == str(steam_root)
     assert manager.list_compatibility_tools() == {
         "GE-Proton10-4": str(proton),
     }
