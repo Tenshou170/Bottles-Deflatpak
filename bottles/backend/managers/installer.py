@@ -87,6 +87,24 @@ class InstallerManager:
         """Wrapper for the repo method."""
         return self.__repo.get_icon(installer)
 
+    @staticmethod
+    def supports_channel(installer, include_unstable=False):
+        channel = installer[1].get("Channel", "stable")
+        return include_unstable or channel not in ("rc", "unstable")
+
+    @staticmethod
+    def supports_runner(installer, runner):
+        runners = installer[1].get("Runners")
+        if not runners:
+            return True
+        if not isinstance(runners, list):
+            return False
+        return any(
+            isinstance(candidate, str)
+            and (runner == candidate or runner.startswith(f"{candidate}-"))
+            for candidate in runners
+        )
+
     def __download_icon(self, config, executable: dict, manifest):
         """
         Download the installer icon from the repository to the bottle
@@ -181,11 +199,13 @@ class InstallerManager:
         for st in steps:
             # Step type: run_script
             if st.get("action") == "run_script":
-                self.__step_run_script(config, st)
+                if not self.__step_run_script(config, st):
+                    return False
 
             # Step type: run_winecommand
             if st.get("action") == "run_winecommand":
-                self.__step_run_winecommand(config, st)
+                if not self.__step_run_winecommand(config, st):
+                    return False
 
             # Step type: update_config
             if st.get("action") == "update_config":
@@ -220,7 +240,12 @@ class InstallerManager:
                         environment=st.get("environment"),
                         monitoring=st.get("monitoring", []),
                     )
-                    executor.run()
+                    result = executor.run()
+                    if not result.ok:
+                        logging.error(
+                            f"Failed to install {st.get('file_name')}: {result.message}"
+                        )
+                        return False
                 else:
                     logging.error(
                         f"Failed to download {st.get('file_name')}, or checksum failed."
@@ -234,7 +259,7 @@ class InstallerManager:
         commands = step.get("commands")
 
         if not commands:
-            return
+            return False
 
         for command in commands:
             _winecommand = WineCommand(
@@ -242,8 +267,12 @@ class InstallerManager:
                 command=command.get("command"),
                 arguments=command.get("arguments"),
                 minimal=command.get("minimal"),
+                communicate=command.get("wait", False),
             )
-            _winecommand.run()
+            if not _winecommand.run().ok:
+                return False
+
+        return True
 
     @staticmethod
     def __step_run_script(config: BottleConfig, step: dict):
@@ -267,14 +296,19 @@ class InstallerManager:
                 return False
 
         logging.info("Executing installer script…")
-        subprocess.Popen(
+        process = subprocess.Popen(
             f"bash -c '{script}'",
             shell=True,
             cwd=ManagerUtils.get_bottle_path(config),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-        ).communicate()
+        )
+        process.communicate()
+        if process.returncode:
+            logging.error(f"Installer script exited with status {process.returncode}.")
+            return False
         logging.info("Finished executing installer script.")
+        return True
 
     @staticmethod
     def __step_update_config(config: BottleConfig, step: dict):
@@ -352,7 +386,7 @@ class InstallerManager:
             i = int(len(manifest.get("Steps")))
             steps["sections"] += i * ["steps"]
             steps["total"] += i
-        if manifest.get("Executable"):
+        if manifest.get("Executable") or manifest.get("Executables"):
             steps["sections"].append("exe")
             steps["total"] += 1
         if manifest.get("Checks"):
@@ -388,28 +422,39 @@ class InstallerManager:
         manifest = self.get_installer(installer[0])
         _config = config
 
-        bottle = ManagerUtils.get_bottle_path(config)
         installers = manifest.get("Installers")
         dependencies = manifest.get("Dependencies")
         parameters = manifest.get("Parameters")
         executable = manifest.get("Executable")
+        executables = manifest.get("Executables")
         steps = manifest.get("Steps")
         checks = manifest.get("Checks")
 
+        if executables is None:
+            executables = [executable]
+            skip_missing = False
+        else:
+            skip_missing = True
+
         if (
-            not isinstance(executable, dict)
-            or not executable.get("file")
-            or not executable.get("name")
+            not isinstance(executables, list)
+            or not executables
+            or any(
+                not isinstance(item, dict)
+                or not item.get("file")
+                or not item.get("name")
+                for item in executables
+            )
         ):
-            logging.error("Installer manifest has no valid Executable block.")
+            logging.error("Installer manifest has no valid executable block.")
             return Result(
                 False,
                 data={"message": "Installer is not well configured."},
             )
 
-        # download icon
-        if executable.get("icon"):
-            self.__download_icon(_config, executable, manifest)
+        for item in executables:
+            if item.get("icon"):
+                self.__download_icon(_config, item, manifest)
 
         # install dependent installers
         if installers:
@@ -471,12 +516,38 @@ class InstallerManager:
                         },
                     )
 
-        # register executable
+        registered = 0
+        for item in executables:
+            if self.__register_executable(_config, item, skip_missing):
+                registered += 1
+
+        if not registered:
+            logging.error("No installer executable was found.")
+            return Result(
+                False,
+                data={"message": "Checks failed, the program is not installed."},
+            )
+
+        if is_final:
+            step_fn()
+
+        logging.info(
+            f"Program installed: {manifest['Name']} in {config.Name}.", jn=True
+        )
+        return Result(True)
+
+    def __register_executable(self, config, executable, skip_missing=False):
+        bottle = ManagerUtils.get_bottle_path(config)
         exec_path = executable.get("path", "")
         if exec_path.startswith("userdir/"):
             _userdir = WineUtils.get_user_dir(bottle)
             exec_path = exec_path.replace("userdir/", f"/users/{_userdir}/")
             executable["path"] = exec_path
+
+        if skip_missing:
+            unix_path = os.path.join(bottle, "drive_c", exec_path.lstrip("/"))
+            if not os.path.isfile(unix_path):
+                return False
 
         _path = f"C:\\{exec_path}".replace("/", "\\")
         _uuid = str(uuid.uuid4())
@@ -519,13 +590,8 @@ class InstallerManager:
 
         # create Desktop entry
         bottles_icons_path = os.path.join(ManagerUtils.get_bottle_path(config), "icons")
-        icon_path = os.path.join(bottles_icons_path, executable.get("icon"))
-        ManagerUtils.create_desktop_entry(_config, _program, False, icon_path)
+        icon = executable.get("icon")
+        icon_path = os.path.join(bottles_icons_path, icon) if icon else ""
+        ManagerUtils.create_desktop_entry(config, _program, False, icon_path)
 
-        if is_final:
-            step_fn()
-
-        logging.info(
-            f"Program installed: {manifest['Name']} in {config.Name}.", jn=True
-        )
-        return Result(True)
+        return True
