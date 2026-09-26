@@ -26,8 +26,6 @@ from bottles.backend.health import HealthChecker
 from bottles.backend.logger import Logger
 from bottles.frontend.params import (
     APP_ID,
-    APP_MAJOR_VERSION,
-    APP_MINOR_VERSION,
     APP_VERSION,
 )
 
@@ -410,9 +408,9 @@ class Bottles(Adw.Application):
 
         about_dialog = Adw.AboutDialog.new_from_appdata(
             "/com/usebottles/bottles/appdata",
-            f"{APP_MAJOR_VERSION}.{APP_MINOR_VERSION}",
+            APP_VERSION,
         )
-        about_dialog.set_version(f"{APP_MAJOR_VERSION}.{APP_MINOR_VERSION}")
+        about_dialog.set_version(APP_VERSION)
         about_dialog.set_developers(developers)
         about_dialog.set_translator_credits(_("translator_credits"))
         about_dialog.set_artists(artists)
