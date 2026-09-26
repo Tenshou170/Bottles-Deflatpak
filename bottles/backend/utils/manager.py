@@ -997,8 +997,9 @@ class ManagerUtils:
         if get_locales:
             return locales
 
-        return names @ staticmethod
+        return names
 
+    @staticmethod
     def build_browser_handoff_wrapper() -> str:
         """
         Return the POSIX sh script deployed as the browser handoff wrapper.

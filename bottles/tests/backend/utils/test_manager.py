@@ -984,3 +984,23 @@ def test_unknown_portal_state_without_manual_launcher_fails(monkeypatch, tmp_pat
         )
         is False
     )
+
+
+def test_get_languages_returns_names():
+    """Regression: the upstream-sync seam once fused this return with a
+    decorator into `names @ staticmethod`, which passed imports and tests
+    (matmul is valid syntax) but crashed the bottle properties dialog."""
+    languages = ManagerUtils.get_languages()
+    assert isinstance(languages, list)
+    assert len(languages) > 0
+    assert all(isinstance(name, str) for name in languages)
+
+
+def test_get_languages_locales_and_names_paired():
+    locales = ManagerUtils.get_languages(get_locales=True)
+    names = ManagerUtils.get_languages()
+    assert len(locales) == len(names)
+
+    locale, name = ManagerUtils.get_languages(from_locale="en_US")
+    assert locale == "en_US"
+    assert name in names
