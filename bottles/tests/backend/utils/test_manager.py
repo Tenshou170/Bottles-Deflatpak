@@ -1004,3 +1004,45 @@ def test_get_languages_locales_and_names_paired():
     locale, name = ManagerUtils.get_languages(from_locale="en_US")
     assert locale == "en_US"
     assert name in names
+
+
+def test_get_portal_icon_falls_back_on_garbage(tmp_path, caplog):
+    """Regression: an error page saved as .png once reached the
+    DynamicLauncher portal and wedged xdg-desktop-portal-kde, killing
+    every file picker on the desktop. The portal icon must always be
+    decodable."""
+    garbage = tmp_path / "hoyoplay.png"
+    garbage.write_bytes(b"error code: 1010\n")
+
+    with caplog.at_level("WARNING"):
+        icon = ManagerUtils._get_portal_icon(str(garbage))
+
+    assert icon.get_uri().endswith("com.usebottles.bottles-program.svg")
+    assert "not a decodable image" in caplog.text
+
+
+def test_get_portal_icon_passes_valid_png(tmp_path):
+    import struct
+    import zlib
+
+    # build a minimal valid 1x1 PNG by hand
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data))
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\x4a\xff\x4a"))
+        + chunk(b"IEND", b"")
+    )
+    good = tmp_path / "good.png"
+    good.write_bytes(png)
+
+    icon = ManagerUtils._get_portal_icon(str(good))
+    assert icon.get_path() == str(good)
+
+
+def test_get_portal_icon_default_resource():
+    icon = ManagerUtils._get_portal_icon("com.usebottles.bottles-program")
+    assert icon.get_uri().startswith("resource:")

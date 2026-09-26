@@ -354,6 +354,39 @@ class ManagerUtils:
         return icon
 
     @staticmethod
+    def _get_portal_icon(icon: str) -> Gio.File:
+        """Return a decodable Gio.File for the DynamicLauncher portal.
+
+        Decode before handing the bytes to the portal: a malformed icon
+        (e.g. an error page saved as .png) wedged portal backends
+        mid-request and took down the whole portal session, killing
+        every file picker on the desktop.
+        """
+        if icon == "com.usebottles.bottles-program":
+            return Gio.File.new_for_uri(
+                f"resource:/com/usebottles/bottles/icons/scalable/apps/{icon}.svg"
+            )
+
+        _icon = Gio.File.new_for_path(icon)
+        try:
+            import gi
+
+            gi.require_version("GdkPixbuf", "2.0")
+            from gi.repository import GdkPixbuf
+
+            GdkPixbuf.Pixbuf.new_from_file(_icon.get_path())
+        except Exception as e:
+            logging.warning(
+                f"Icon '{icon}' is not a decodable image ({e}). "
+                "Falling back to the default Bottles icon."
+            )
+            return Gio.File.new_for_uri(
+                "resource:/com/usebottles/bottles/icons/scalable/apps/"
+                "com.usebottles.bottles-program.svg"
+            )
+        return _icon
+
+    @staticmethod
     def create_desktop_entry(
         config,
         program: dict,
@@ -537,12 +570,8 @@ class ManagerUtils:
             notify_failed()
             return
 
-        if icon == "com.usebottles.bottles-program":
-            _icon = Gio.File.new_for_uri(
-                f"resource:/com/usebottles/bottles/icons/scalable/apps/{icon}.svg"
-            )
-        else:
-            _icon = Gio.File.new_for_path(icon)
+        _icon = ManagerUtils._get_portal_icon(icon)
+
         icon_v = Gio.BytesIcon.new(_icon.load_bytes()[0]).serialize()
         try:
             portal.dynamic_launcher_prepare_install(

@@ -28,6 +28,8 @@ from bottles.backend.logger import Logger
 from bottles.backend.managers.conf import ConfigManager
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.models.result import Result
+from bottles.backend.params import APP_VERSION
+from bottles.backend.utils.generic import get_mime
 from bottles.backend.utils.manager import ManagerUtils
 from bottles.backend.utils.wine import WineUtils
 from bottles.backend.wine.executor import WineExecutor
@@ -109,6 +111,11 @@ class InstallerManager:
         """
         Download the installer icon from the repository to the bottle
         icons path.
+
+        The response is only persisted after validating both the HTTP
+        status and the content: writing an error page (e.g. a CDN bot
+        ban) as .png later crashes portal clients that try to decode it
+        as an image (see create_desktop_entry).
         """
         icon_url = self.__repo.get_icon(manifest.get("Name"))
         bottle_icons_path = f"{ManagerUtils.get_bottle_path(config)}/icons"
@@ -119,8 +126,9 @@ class InstallerManager:
                 os.makedirs(bottle_icons_path)
 
             if not os.path.isfile(icon_path):
+                tmp_icon_path = f"{icon_path}.part"
                 try:
-                    with open(icon_path, "wb") as f:
+                    with open(tmp_icon_path, "wb") as f:
                         c = pycurl.Curl()
                         _proxy = os.environ.get("http_proxy") or os.environ.get(
                             "https_proxy"
@@ -128,13 +136,24 @@ class InstallerManager:
                         if _proxy:
                             c.setopt(pycurl.PROXY, _proxy)
                         c.setopt(c.URL, icon_url)
+                        c.setopt(
+                            c.USERAGENT,
+                            f"Bottles/{APP_VERSION} (not a bot; launcher icon fetch)",
+                        )
                         c.setopt(c.WRITEDATA, f)
                         c.perform()
+                        status = c.getinfo(pycurl.RESPONSE_CODE)
                         c.close()
-                except pycurl.error as e:
+                    if status != 200:
+                        raise RuntimeError(f"HTTP {status}")
+                    mime = get_mime(tmp_icon_path)
+                    if not mime or not mime.startswith("image/"):
+                        raise RuntimeError(f"response is {mime or 'unknown'}")
+                    os.replace(tmp_icon_path, icon_path)
+                except (pycurl.error, RuntimeError, OSError) as e:
                     logging.error(f"Failed to download icon '{icon_url}': {e}")
-                    if os.path.isfile(icon_path):
-                        os.remove(icon_path)
+                    if os.path.isfile(tmp_icon_path):
+                        os.remove(tmp_icon_path)
 
     def __process_local_resources(self, exe_msi_steps, installer):
         files = self.has_local_resources(installer)
