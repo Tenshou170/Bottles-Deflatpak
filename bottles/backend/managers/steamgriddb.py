@@ -25,6 +25,7 @@ import requests
 from bottles.backend.globals import Paths
 from bottles.backend.logger import Logger
 from bottles.backend.models.config import BottleConfig
+from bottles.backend.utils.generic import get_mime
 from bottles.backend.utils.manager import ManagerUtils
 
 logging = Logger()
@@ -37,11 +38,22 @@ class SteamGridDBManager:
             res = requests.get(
                 f"https://steamgrid.usebottles.com/api/search/{name}", timeout=10
             )
-        except:
+        except Exception:
             return
 
-        if res.status_code == 200:
-            return SteamGridDBManager.__save_grid(res.json(), config)
+        if res.status_code != 200:
+            logging.warning(
+                f"SteamGridDB search for '{name}' failed with HTTP {res.status_code}."
+            )
+            return
+
+        try:
+            url = res.json()
+        except ValueError:
+            logging.warning(f"SteamGridDB search for '{name}' returned invalid JSON.")
+            return
+
+        return SteamGridDBManager.__save_grid(url, config)
 
     @staticmethod
     def __save_grid(url: str, config: Optional[BottleConfig] = None):
@@ -58,11 +70,27 @@ class SteamGridDBManager:
         filename = str(uuid.uuid4()) + "." + ext
         path = os.path.join(grids_path, filename)
 
+        # Persist only after validating the response: a blocked or broken
+        # CDN can answer with an HTML error page, and a garbage grid file
+        # would be cached and rendered by the library forever.
+        tmp_path = f"{path}.part"
         try:
             r = requests.get(url, timeout=10)
-            with open(path, "wb") as f:
+            if r.status_code != 200:
+                logging.warning(f"Grid download failed with HTTP {r.status_code}.")
+                return
+            with open(tmp_path, "wb") as f:
                 f.write(r.content)
-        except Exception:
+            mime = get_mime(tmp_path)
+            if not mime or not mime.startswith("image/"):
+                logging.warning(f"Grid download is not an image ({mime}).")
+                os.remove(tmp_path)
+                return
+            os.replace(tmp_path, path)
+        except Exception as e:
+            logging.error(f"Failed to save grid from {url}: {e}")
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
             return
 
         return f"{uri_prefix}{filename}"

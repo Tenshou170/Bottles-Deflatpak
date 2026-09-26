@@ -336,3 +336,36 @@ def test_installer_step_reports_failed_executable(mocker):
     )
 
     assert result is False
+
+
+def test_safe_icon_name_rejects_traversal_and_abs():
+    from bottles.backend.managers.installer import _safe_icon_name
+
+    assert _safe_icon_name("editor.png") == "editor.png"
+    assert _safe_icon_name("ICON.SVG") == "ICON.SVG"
+    assert _safe_icon_name("../../.bashrc") is None
+    assert _safe_icon_name("/etc/passwd") is None
+    assert _safe_icon_name("sub/dir/x.png") is None
+    assert _safe_icon_name("") is None
+    assert _safe_icon_name(None) is None
+    assert _safe_icon_name("script.sh") is None
+
+
+def test_download_icon_refuses_unsafe_name(tmp_path, monkeypatch):
+    installer = object.__new__(InstallerManager)
+    installer._InstallerManager__repo = type(
+        "R", (), {"get_icon": staticmethod(lambda _n: None)}
+    )()
+    config = BottleConfig(Name="Test", Path=str(tmp_path))
+    executable = {"icon": "../../../.bashrc"}
+
+    monkeypatch.setattr(
+        "bottles.backend.managers.installer.ManagerUtils.get_bottle_path",
+        lambda _config: str(tmp_path),
+    )
+
+    assert (
+        installer._InstallerManager__download_icon(config, executable, {"Name": "X"})
+        is None
+    )
+    assert not (tmp_path / "icons").exists()

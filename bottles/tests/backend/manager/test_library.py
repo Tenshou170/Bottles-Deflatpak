@@ -332,6 +332,7 @@ def test_umu_remote_thumbnail_uses_separate_cover_storage(monkeypatch, tmp_path)
             return "https://example.com/control.png"
 
     class ImageResponse:
+        status_code = 200
         content = PNG_DATA
 
     monkeypatch.setattr(

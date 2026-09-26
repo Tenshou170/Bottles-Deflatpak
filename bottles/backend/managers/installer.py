@@ -38,6 +38,24 @@ from bottles.backend.wine.winecommand import WineCommand
 
 logging = Logger()
 
+_SAFE_ICON_SUFFIXES = (".png", ".ico", ".svg", ".jpg", ".jpeg")
+
+
+def _safe_icon_name(value) -> Optional[str]:
+    """Return value if it is a plain icon filename, else None.
+
+    Icon names come from repository manifests; reject anything that could
+    escape the bottle icons directory (separators, traversal, absolute
+    paths) before it reaches open() or os.path.join().
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    if value != os.path.basename(value) or value in (".", ".."):
+        return None
+    if not value.lower().endswith(_SAFE_ICON_SUFFIXES):
+        return None
+    return value
+
 
 class InstallerManager:
     def __init__(self, manager, offline: bool = False):
@@ -119,7 +137,13 @@ class InstallerManager:
         """
         icon_url = self.__repo.get_icon(manifest.get("Name"))
         bottle_icons_path = f"{ManagerUtils.get_bottle_path(config)}/icons"
-        icon_path = f"{bottle_icons_path}/{executable.get('icon')}"
+        icon_name = _safe_icon_name(executable.get("icon"))
+        if icon_name is None:
+            logging.error(
+                f"Refusing unsafe icon name from manifest: {executable.get('icon')!r}"
+            )
+            return
+        icon_path = f"{bottle_icons_path}/{icon_name}"
 
         if icon_url is not None:
             if not os.path.exists(bottle_icons_path):
@@ -609,7 +633,12 @@ class InstallerManager:
 
         # create Desktop entry
         bottles_icons_path = os.path.join(ManagerUtils.get_bottle_path(config), "icons")
-        icon = executable.get("icon")
+        icon = _safe_icon_name(executable.get("icon"))
+        if icon is None:
+            logging.error(
+                f"Refusing unsafe icon name from manifest: {executable.get('icon')!r}"
+            )
+            icon = ""
         icon_path = os.path.join(bottles_icons_path, icon) if icon else ""
         ManagerUtils.create_desktop_entry(config, _program, False, icon_path)
 
