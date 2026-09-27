@@ -93,6 +93,8 @@ def test_forced_dll_overrides_take_precedence(monkeypatch, tmp_path):
     winecmd.arguments = ""
     winecmd.runner = "/usr/bin/wine"
     winecmd.runner_runtime = ""
+    winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
     winecmd.terminal = False
     winecmd.forced_dll_overrides = "mscoree=d"

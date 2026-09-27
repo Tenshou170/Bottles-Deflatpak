@@ -1252,6 +1252,7 @@ def test_winecommand_filters_host_environment(monkeypatch, tmp_path):
     winecmd.runner = "/usr/bin/wine"
     winecmd.runner_runtime = ""
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
     winecmd.terminal = False
 
@@ -1336,6 +1337,7 @@ def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
     winecmd.runner = str(dist_path / "bin/wine")
     winecmd.runner_runtime = "sniper"
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
     winecmd.terminal = False
 
@@ -1371,6 +1373,73 @@ def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
     assert env["FSR4_UPGRADE"] == "1"
 
 
+def test_winecommand_umu_exports_protonpath_and_gameid(monkeypatch, tmp_path):
+    bottle_path = tmp_path / "TestBottle"
+    bottle_path.mkdir()
+    proton_path = tmp_path / "DW-Proton"
+    dist_path = proton_path / "files"
+    dist_path.mkdir(parents=True)
+
+    config = BottleConfig(Name="Test", Path=str(bottle_path), Runner="DW-Proton")
+    config.Parameters = BottleParams()
+    config.Parameters.use_runtime = False
+    config.Parameters.use_eac_runtime = False
+    config.Parameters.use_be_runtime = False
+    config.Parameters.use_umu = True
+
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.ManagerUtils.get_bottle_path",
+        lambda _config: str(bottle_path),
+    )
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.ManagerUtils.get_runner_path",
+        lambda _runner: str(proton_path),
+    )
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.SteamUtils.is_proton", lambda *_: True
+    )
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.SteamUtils.get_dist_directory",
+        lambda _runner: str(dist_path),
+    )
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.DisplayUtils.check_nvidia_device",
+        lambda: None,
+    )
+
+    def _fake_gpu(self):
+        return {"prime": {"discrete": None, "integrated": None}, "vendors": {}}
+
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.GPUUtils.get_gpu",
+        _fake_gpu,
+    )
+
+    winecmd = WineCommand.__new__(WineCommand)
+    winecmd.config = config
+    winecmd.minimal = True
+    winecmd.arguments = ""
+    winecmd.runner = "/usr/bin/umu-run"
+    winecmd.runner_runtime = ""
+    winecmd.proton_script = None
+    winecmd.umu_proton_path = str(proton_path)
+    winecmd.umu_id = "umu-zenlesszonezero"
+    winecmd.umu_store = "none"
+    winecmd.gamescope_activated = False
+    winecmd.terminal = False
+
+    env = winecmd.get_env()
+
+    # umu-run validates PROTONPATH by looking for toolmanifest.vdf, which
+    # lives at the runner root, not in the dist/files subdir.
+    assert env["PROTONPATH"] == str(proton_path)
+    assert env["GAMEID"] == "umu-zenlesszonezero"
+    assert env["STORE"] == "none"
+    # umu-run maps GAMEID -> UMU_ID; a leftover plain "0" from the Proton
+    # branch must not take precedence.
+    assert env["UMU_ID"] == "umu-default"
+
+
 def test_wayland_sandbox_clears_parent_display(monkeypatch, tmp_path):
     bottle_path = tmp_path / "TestBottle"
     bottle_path.mkdir()
@@ -1393,6 +1462,7 @@ def test_wayland_sandbox_clears_parent_display(monkeypatch, tmp_path):
     winecmd.cwd = str(bottle_path)
     winecmd.runner_runtime = ""
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.steam_runtime_root = None
 
     command = winecmd._get_sandbox_manager().get_cmd("wine")
@@ -1464,6 +1534,7 @@ def test_dedicated_sandbox_uses_selected_runtime_path(
     winecmd.runner = str(runner_path / "files/bin/wine")
     winecmd.runner_runtime = "sniper"
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
     winecmd.cwd = str(bottle_path)
     winecmd.env = {}
@@ -1516,6 +1587,7 @@ def test_host_wrappers_run_outside_steam_runtime(
     winecmd.runner = "/runner/files/bin/wine"
     winecmd.runner_runtime = "sniper"
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
 
     command = winecmd.get_cmd("game.exe")
@@ -1554,6 +1626,7 @@ def test_steam_runtime_uses_supported_command_separator(
     winecmd.runner = "/runner/bin/wine"
     winecmd.runner_runtime = runtime
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
 
     command = winecmd.get_cmd("game.exe")
@@ -1596,6 +1669,7 @@ def test_dedicated_sandbox_shares_forwarded_document_read_write(monkeypatch, tmp
     winecmd.cwd = str(bottle_path)
     winecmd.runner_runtime = ""
     winecmd.proton_script = None
+    winecmd.umu_proton_path = None
     winecmd.steam_runtime_root = None
     winecmd.env = {}
 

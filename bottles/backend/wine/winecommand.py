@@ -387,7 +387,7 @@ class WineCommand:
         pre_script_args: Optional[str] = None,
         post_script_args: Optional[str] = None,
         cwd: Optional[str] = None,
-        umu_id: str = "none",
+        umu_id: str = "umu-default",
         umu_store: str = "none",
         sandbox_override: Optional[str] = None,
         forced_dll_overrides: Optional[str] = None,
@@ -405,6 +405,7 @@ class WineCommand:
         self.umu_id = umu_id
         self.umu_store = umu_store
         self.proton_script: Optional[str] = None
+        self.umu_proton_path: Optional[str] = None
         self.runner, self.runner_runtime = self._get_runner_info()
         self.gamescope_activated = (
             environment["GAMESCOPE"] == "1"
@@ -528,7 +529,10 @@ class WineCommand:
             env.add("PROTON_USE_SECCOMP", "1", override=True)
             env.add("USER", "steamuser", override=True)
             env.add("USERNAME", "steamuser", override=True)
-            env.add("UMU_ID", "0")
+            # Sentinel UMU game id so protonfixes-based runners (e.g. DW-Proton)
+            # can identify the game and apply their per-game fixes; a bare "0"
+            # defeats that detection entirely. Overridable per program.
+            env.add("UMU_ID", "umu-default")
             env.add("UMU_USE_STEAM", "0")
             env.add("SteamAppId", "0")
             env.add("SteamGameId", "0")
@@ -536,6 +540,14 @@ class WineCommand:
             if params.proton_log:
                 env.add("PROTON_LOG", "1", override=True)
                 env.add("PROTON_LOG_DIR", bottle, override=True)
+
+        if self.umu_proton_path:
+            # When delegating to umu-run, hand over the selected Proton runner
+            # and the game identity; umu-run maps GAMEID to UMU_ID internally
+            # (which protonfixes-based runners rely on for per-game fixes).
+            env.add("PROTONPATH", self.umu_proton_path, override=True)
+            env.add("GAMEID", self.umu_id, override=True)
+            env.add("STORE", self.umu_store, override=True)
 
         # Environment variables from argument
         if environment:
@@ -865,6 +877,10 @@ class WineCommand:
             """
             runner_runtime = SteamUtils.get_associated_runtime(runner)
             if config.Parameters.use_umu and UMUUtils.is_umu_available():
+                # Hand the Proton runner over to umu-run; without PROTONPATH
+                # umu-run silently picks its own default Proton instead.
+                # umu-run expects the runner ROOT (the directory holding
+                # toolmanifest.vdf), not the dist/files subdir.
                 self.umu_proton_path = runner
                 runner = UMUUtils.get_umu_run_path()
                 return runner, ""
