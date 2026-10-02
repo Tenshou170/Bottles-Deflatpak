@@ -24,6 +24,7 @@ from bottles.backend.wine.winecommand import (
     apply_frame_rate_limit,
     apply_hidraw_preferences,
     apply_hdr_preferences,
+    apply_identity_bridge,
     apply_openxr_preferences,
     apply_wayland_preferences,
 )
@@ -142,6 +143,56 @@ def test_openxr_preferences_preserve_runtime_override(tmp_path):
     apply_openxr_preferences(env, "soda-11.0-7", str(runner), str(bottle))
 
     assert env.get()["envs"]["SODA_OPENXR_RUNTIME"] == "steam"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "lib/wine/x86_64-unix",
+        "lib64/wine/x86_64-unix",
+        "lib/wine/i386-unix",
+        "lib/wine/aarch64-unix",
+        "lib64/wine/aarch64-unix",
+    ],
+)
+def test_identity_bridge_is_exposed_for_compatible_soda_runner(
+    tmp_path, monkeypatch, location
+):
+    runner = tmp_path / "runner"
+    unixlib = runner / location / "windows.security.authentication.onlineid.so"
+    unixlib.parent.mkdir(parents=True)
+    unixlib.touch()
+    bottle = tmp_path / "bottle"
+    bottle.mkdir()
+    env = WineEnv(clean=True)
+    monkeypatch.setattr(
+        winecommand,
+        "start_identity_bridge",
+        lambda context: "/run/user/1000/bridge.sock",
+    )
+
+    apply_identity_bridge(env, "soda-11.0-23", str(runner), str(bottle))
+
+    assert env.get()["envs"]["SODA_IDENTITY_BRIDGE_SOCKET"] == (
+        "/run/user/1000/bridge.sock"
+    )
+
+
+def test_identity_bridge_requires_runner_unixlib(tmp_path, monkeypatch):
+    called = False
+
+    def start(_context):
+        nonlocal called
+        called = True
+        return "/run/user/1000/bridge.sock"
+
+    monkeypatch.setattr(winecommand, "start_identity_bridge", start)
+    env = WineEnv(clean=True)
+
+    apply_identity_bridge(env, "soda-11.0-23", str(tmp_path), str(tmp_path))
+
+    assert not called
+    assert "SODA_IDENTITY_BRIDGE_SOCKET" not in env.get()["envs"]
 
 
 def test_openxr_preferences_reject_drive_c_outside_bottle(tmp_path):
@@ -438,11 +489,43 @@ def test_program_dxvk_false_adds_builtin_override(tmp_path):
     )
 
 
+def test_global_dxvk_false_adds_builtin_override(tmp_path):
+    executable = tmp_path / "program.exe"
+    executable.touch()
+    config = _make_config()
+    config.Parameters.dxvk = False
+
+    executor = WineExecutor(
+        config=config,
+        exec_path=str(executable),
+    )
+
+    assert executor.environment["WINEDLLOVERRIDES"] == (
+        f"{DXVKComponent.get_override_keys()}=b"
+    )
+
+
+def test_program_dxvk_true_overrides_global_disabled_state(tmp_path):
+    executable = tmp_path / "program.exe"
+    executable.touch()
+    config = _make_config()
+    config.Parameters.dxvk = False
+
+    executor = WineExecutor(
+        config=config,
+        exec_path=str(executable),
+        program_dxvk=True,
+    )
+
+    assert "WINEDLLOVERRIDES" not in executor.environment
+
+
 def test_program_d7vk_false_adds_builtin_override(tmp_path):
     executable = tmp_path / "program.exe"
     executable.touch()
     config = _make_config()
     config.Parameters.d7vk = True
+    config.Parameters.dxvk = True
 
     executor = WineExecutor(
         config=config,
@@ -552,6 +635,36 @@ def test_winecommand_reports_nonzero_exit_status(monkeypatch):
     assert not result.ok
     assert result.data == "registry failed"
     assert result.message == "Command exited with status 7."
+    assert command.returncode == 7
+
+
+def test_winecommand_reports_full_windows_exit_status(monkeypatch):
+    process = SimpleNamespace(
+        returncode=108,
+        communicate=lambda: (b"setup failed\nBOTTLES_EXIT_CODE_test=17004\r\n", None),
+    )
+    monkeypatch.setattr(
+        winecommand.subprocess, "Popen", lambda *_args, **_kwargs: process
+    )
+
+    command = WineCommand.__new__(WineCommand)
+    command.runner = "/usr/bin/wine"
+    command.env = {}
+    command.command = "wine cmd.exe /d /c test.bat"
+    command.config = _make_config()
+    command.terminal = False
+    command.sandbox_override = None
+    command.communicate = True
+    command.cwd = None
+    command._exit_code_batch = None
+    command._exit_code_marker = "BOTTLES_EXIT_CODE_test"
+
+    result = command.run()
+
+    assert not result.ok
+    assert result.data == "setup failed"
+    assert result.message == "Command exited with status 17004."
+    assert command.returncode == 17004
 
 
 def test_executable_launch_reports_winecommand_failure(monkeypatch):
@@ -1090,6 +1203,40 @@ def test_gamescope_removes_hdr_wsi_when_hdr_is_disabled():
     apply_hdr_preferences(env, BottleParams(), gamescope_activated=True)
 
     assert "ENABLE_HDR_WSI" not in env.get()["envs"]
+
+
+def test_native_wayland_enables_egl(monkeypatch):
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.DisplayUtils.display_server_type",
+        lambda: "wayland",
+    )
+    env = WineEnv(clean=True)
+    env.add("DISPLAY", ":1")
+    env.add("WAYLAND_DISPLAY", "wayland-0")
+
+    apply_wayland_preferences(env, BottleParams(wayland=True))
+
+    resolved = env.get()["envs"]
+    assert "DISPLAY" not in resolved
+    assert resolved["WINE_USE_EGL"] == "1"
+
+
+@pytest.mark.parametrize("session_type", [None, ""])
+def test_native_wayland_without_session_type(monkeypatch, session_type):
+    if session_type is None:
+        monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    else:
+        monkeypatch.setenv("XDG_SESSION_TYPE", session_type)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    env = WineEnv(clean=True)
+    env.add("DISPLAY", ":1")
+    env.add("WAYLAND_DISPLAY", "wayland-0")
+
+    apply_wayland_preferences(env, BottleParams(wayland=True))
+
+    resolved = env.get()["envs"]
+    assert "DISPLAY" not in resolved
+    assert resolved["WINE_USE_EGL"] == "1"
 
 
 def test_hdr_preferences_require_native_wayland_for_hdr():

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 
 def _setup_test_env() -> None:
@@ -7,6 +8,9 @@ def _setup_test_env() -> None:
     repo_root = os.path.abspath(os.path.join(this_dir, os.pardir, os.pardir))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
+
+    # Some upstream tests read TMPDIR directly; not every session exports it.
+    os.environ.setdefault("TMPDIR", tempfile.gettempdir())
 
     build_data = os.path.join(repo_root, "build", "data")
     data_dir = os.path.join(repo_root, "data")

@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from bottles.backend.managers.installer import InstallerManager
@@ -39,6 +41,26 @@ def test_installer_respects_compatible_runners(runners, runner, expected):
     installer = ("test", metadata)
 
     assert InstallerManager.supports_runner(installer, runner) is expected
+
+
+def test_installer_refreshes_catalog_and_cached_manifests(mocker):
+    repository = mocker.Mock()
+    repository.catalog = {"old": {"Name": "Old"}}
+
+    def refresh():
+        repository.catalog = {"new": {"Name": "New"}}
+
+    repository.refresh.side_effect = refresh
+    installer = object.__new__(InstallerManager)
+    installer._InstallerManager__repo = repository
+    installer._InstallerManager__utils_conn = mocker.Mock(check_connection=lambda: True)
+
+    assert installer.fetch_catalog() == {"old": {"Name": "Old"}}
+    repository.get.return_value = {"Version": 1}
+    assert installer.get_installer("office") == {"Version": 1}
+    repository.get.return_value = {"Version": 2}
+    assert installer.refresh_catalog() == {"new": {"Name": "New"}}
+    assert installer.get_installer("office") == {"Version": 2}
 
 
 @pytest.mark.parametrize("current_value", [True, False])
@@ -164,6 +186,7 @@ def test_installer_registers_multiple_installed_programs(mocker, monkeypatch, tm
                 "file": "WINWORD.EXE",
                 "name": "Microsoft Word",
                 "path": "Program Files/Microsoft Office/WINWORD.EXE",
+                "pre_script": "%BOTTLE_PATH%/drive_c/office-pre-launch.sh",
             },
             {
                 "file": "EXCEL.EXE",
@@ -201,6 +224,12 @@ def test_installer_registers_multiple_installed_programs(mocker, monkeypatch, tm
         "Microsoft Word",
         "Microsoft Excel",
     }
+    word = next(
+        program
+        for program in config.External_Programs.values()
+        if program["name"] == "Microsoft Word"
+    )
+    assert word["pre_script"] == "%BOTTLE_PATH%/drive_c/office-pre-launch.sh"
     assert desktop_entry.call_count == 2
 
 
@@ -303,14 +332,144 @@ def test_run_winecommand_waits_and_reports_failure(mocker):
         },
     )
 
-    assert result is False
+    assert not result.ok
     winecommand.assert_called_once_with(
         mocker.ANY,
         command="reg",
         arguments="query HKCU",
         minimal=True,
         communicate=True,
+        capture_exit_code=False,
     )
+
+
+def test_run_winecommand_accepts_configured_exit_status(mocker):
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+    winecommand.return_value.returncode = 49
+    winecommand.return_value.run.return_value = Result(False, message="failed")
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "sc",
+                    "arguments": "create TestService",
+                    "wait": True,
+                    "success_codes": [0, 49],
+                }
+            ]
+        },
+    )
+
+    assert result.ok
+
+
+def test_run_winecommand_accepts_truncated_configured_exit_status(mocker):
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+    winecommand.return_value.returncode = 1073
+    winecommand.return_value.run.return_value = Result(False, message="failed")
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "sc",
+                    "arguments": "create TestService",
+                    "wait": True,
+                    "success_codes": [0, 49],
+                }
+            ]
+        },
+    )
+
+    assert result.ok
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected_calls"),
+    [
+        (["WINWORD.EXE", "EXCEL.EXE"], 0),
+        (["WINWORD.EXE"], 1),
+    ],
+)
+def test_run_winecommand_skips_only_when_all_files_exist(
+    mocker, monkeypatch, tmp_path, installed, expected_calls
+):
+    bottle = tmp_path / "Test"
+    office = bottle / "drive_c" / "Program Files" / "Microsoft Office"
+    office.mkdir(parents=True)
+    for name in installed:
+        (office / name).touch()
+    monkeypatch.setattr(
+        "bottles.backend.managers.installer.ManagerUtils.get_bottle_path",
+        lambda _config: str(bottle),
+    )
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+    winecommand.return_value.run.return_value = Result(True)
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "setup.exe",
+                    "wait": True,
+                    "skip_if_files_exist": [
+                        "Program Files/Microsoft Office/WINWORD.EXE",
+                        "Program Files/Microsoft Office/EXCEL.EXE",
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert result.ok
+    assert winecommand.call_count == expected_calls
+
+
+def test_run_winecommand_does_not_skip_for_paths_outside_drive_c(
+    mocker, monkeypatch, tmp_path
+):
+    bottle = tmp_path / "Test"
+    drive_c = bottle / "drive_c"
+    drive_c.mkdir(parents=True)
+    (bottle / "outside.exe").touch()
+    monkeypatch.setattr(
+        "bottles.backend.managers.installer.ManagerUtils.get_bottle_path",
+        lambda _config: str(bottle),
+    )
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+    winecommand.return_value.run.return_value = Result(True)
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "setup.exe",
+                    "wait": True,
+                    "skip_if_files_exist": ["../outside.exe"],
+                }
+            ]
+        },
+    )
+
+    assert result.ok
+    winecommand.assert_called_once()
 
 
 def test_installer_step_reports_failed_executable(mocker):
@@ -335,7 +494,131 @@ def test_installer_step_reports_failed_executable(mocker):
         ],
     )
 
-    assert result is False
+    assert not result.ok
+
+
+def test_run_winecommand_reports_activity(mocker):
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+    winecommand.return_value.run.return_value = Result(True)
+    activities = []
+    logs = []
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "C:/setup.exe",
+                    "label": "Microsoft 365 setup",
+                    "arguments": "/configure config.xml",
+                    "wait": True,
+                    "minimal": True,
+                }
+            ]
+        },
+        activity_fn=activities.append,
+        log_fn=logs.append,
+    )
+
+    assert result.ok
+    assert activities == ["Microsoft 365 setup", None]
+    assert logs == ["Started setup.exe", "Finished setup.exe"]
+    winecommand.assert_called_once_with(
+        mocker.ANY,
+        command="C:/setup.exe",
+        arguments="/configure config.xml",
+        minimal=True,
+        communicate=True,
+        capture_exit_code=True,
+    )
+
+
+def test_installer_progress_follows_new_log_entries(mocker, tmp_path):
+    bottle = tmp_path / "bottle"
+    log_dir = bottle / "drive_c/users/test/AppData/Local/Temp"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "installer-test.log"
+    log_path.write_text("progress=10\n", encoding="utf-16-le")
+    mocker.patch(
+        "bottles.backend.managers.installer.ManagerUtils.get_bottle_path",
+        return_value=str(bottle),
+    )
+    config = BottleConfig(Name="Test")
+    progress = {
+        "path": "users/*/AppData/Local/Temp/installer-*.log",
+        "encoding": "utf-16-le",
+        "pattern": r"progress=([0-9]+)",
+    }
+    positions = InstallerManager._InstallerManager__progress_positions(config, progress)
+    stop = threading.Event()
+    values = []
+    lines = []
+    watcher = threading.Thread(
+        target=InstallerManager._InstallerManager__watch_progress,
+        args=(config, progress, positions, stop, values.append, lines.append),
+    )
+    watcher.start()
+
+    with log_path.open("a", encoding="utf-16-le") as log:
+        log.write("progress=40\n")
+
+    stop.set()
+    watcher.join(1)
+
+    assert values == [0.4]
+    assert lines == ["progress=40"]
+
+
+def test_run_winecommand_reports_progress_before_returning(mocker, tmp_path):
+    bottle = tmp_path / "bottle"
+    log_dir = bottle / "drive_c/users/test/AppData/Local/Temp"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "installer.log"
+    mocker.patch(
+        "bottles.backend.managers.installer.ManagerUtils.get_bottle_path",
+        return_value=str(bottle),
+    )
+    winecommand = mocker.patch(
+        "bottles.backend.managers.installer.WineCommand",
+        autospec=True,
+    )
+
+    def finish_command():
+        log_path.write_text("total progress=55\n", encoding="utf-8")
+        return Result(True)
+
+    winecommand.return_value.run.side_effect = finish_command
+    values = []
+    lines = []
+
+    result = InstallerManager._InstallerManager__step_run_winecommand(
+        BottleConfig(Name="Test"),
+        {
+            "commands": [
+                {
+                    "command": "setup.exe",
+                    "wait": True,
+                    "progress": {
+                        "path": "users/*/AppData/Local/Temp/installer.log",
+                        "pattern": r"total progress=([0-9]+)",
+                    },
+                }
+            ]
+        },
+        progress_fn=values.append,
+        log_fn=lines.append,
+    )
+
+    assert result.ok
+    assert values == [None, 0.55, None]
+    assert lines == [
+        "Started setup.exe",
+        "total progress=55",
+        "Finished setup.exe",
+    ]
 
 
 def test_safe_icon_name_rejects_traversal_and_abs():

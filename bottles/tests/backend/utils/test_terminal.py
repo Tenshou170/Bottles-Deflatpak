@@ -7,7 +7,6 @@ def test_execute_finds_supported_terminal(mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
-
     result = terminal.execute("wine game.exe")
 
     assert result is True
@@ -151,3 +150,42 @@ def test_build_argv_supports_various_templates():
     assert TerminalUtils.build_argv(
         ["konsole", "--noclose", "-e", "sh", "-c"], cmd
     ) == ["konsole", "--noclose", "-e", "sh", "-c", cmd]
+
+
+def test_terminal_wrapper_gets_host_display_child_does_not(monkeypatch, mocker):
+    """Native port of upstream 727a01a3 coverage: the terminal emulator is
+    given the host DISPLAY, while the Wine child launched through `sh -c`
+    does not inherit it."""
+    terminal = TerminalUtils()
+    terminal.terminal = ["xterm", "-e %s"]
+    mocker.patch.object(terminal, "check_support", return_value=True)
+    popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
+    popen.return_value.communicate.return_value = (b"", None)
+    monkeypatch.setenv("DISPLAY", ":42")
+
+    assert terminal.execute("wine cmd", env={"WAYLAND_DISPLAY": "wayland-0"}) is True
+
+    wrapper_env = popen.call_args.kwargs["env"]
+    assert wrapper_env["DISPLAY"] == ":42"
+    assert popen.call_args.args[0] == [
+        "xterm",
+        "-e",
+        "sh",
+        "-c",
+        "env -u DISPLAY wine cmd",
+    ]
+
+
+def test_terminal_keeps_requested_child_display(monkeypatch, mocker):
+    terminal = TerminalUtils()
+    terminal.terminal = ["xterm", "-e %s"]
+    mocker.patch.object(terminal, "check_support", return_value=True)
+    popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
+    popen.return_value.communicate.return_value = (b"", None)
+    monkeypatch.setenv("DISPLAY", ":42")
+
+    assert terminal.execute("wine cmd", env={"DISPLAY": ":7"}) is True
+
+    wrapper_env = popen.call_args.kwargs["env"]
+    assert wrapper_env["DISPLAY"] == ":7"
+    assert popen.call_args.args[0] == ["xterm", "-e", "sh", "-c", "wine cmd"]

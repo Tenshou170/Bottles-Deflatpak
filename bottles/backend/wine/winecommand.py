@@ -16,6 +16,7 @@ from bottles.backend.globals import (
     obs_vkc_available,
     vmtouch_available,
 )
+from bottles.backend.identity import start_identity_bridge
 from bottles.backend.logger import Logger
 from bottles.backend.managers.runtime import RuntimeManager
 from bottles.backend.managers.sandbox import SandboxManager
@@ -145,6 +146,7 @@ def apply_wayland_preferences(
     if not env.has("WAYLAND_DISPLAY") and wayland_display:
         env.add("WAYLAND_DISPLAY", wayland_display, override=True)
     if env.has("WAYLAND_DISPLAY") or wayland_display:
+        env.add("WINE_USE_EGL", "1", override=True)
         if proton_wayland_enabled:
             if env.has("PROTON_WAYLAND_MONITOR"):
                 env.add(
@@ -157,7 +159,6 @@ def apply_wayland_preferences(
                 ["winex11.drv=d", "winewayland.drv=b"],
                 sep=";",
             )
-            env.add("WINE_USE_EGL", "1", override=True)
             env.add("WINE_DISABLE_FULLSCREEN_HACK", "1", override=True)
             env.add("WINE_MOVE_HACK", "1")
             env.add("PROTON_USE_XALIA", "0", override=True)
@@ -338,6 +339,26 @@ def apply_fex_preferences(env: "WineEnv", runner_name: str, runner_path: str) ->
     env.add("FEX_APP_CONFIG_LOCATION", os.path.dirname(config))
 
 
+def apply_identity_bridge(
+    env: "WineEnv", runner_name: str, runner_path: str, bottle_path: str
+) -> None:
+    unixlib = "windows.security.authentication.onlineid.so"
+    locations = (
+        os.path.join(runner_path, "lib/wine/x86_64-unix", unixlib),
+        os.path.join(runner_path, "lib64/wine/x86_64-unix", unixlib),
+        os.path.join(runner_path, "lib/wine/i386-unix", unixlib),
+        os.path.join(runner_path, "lib/wine/aarch64-unix", unixlib),
+        os.path.join(runner_path, "lib64/wine/aarch64-unix", unixlib),
+    )
+    if not runner_name.lower().startswith("soda-") or not any(
+        os.path.isfile(location) for location in locations
+    ):
+        return
+    socket_path = start_identity_bridge(bottle_path)
+    if socket_path:
+        env.add("SODA_IDENTITY_BRIDGE_SOCKET", socket_path, override=True)
+
+
 def _needs_steam_virtual_gamepad_workaround(runner_name: Optional[str]) -> bool:
     """Return True if the runner should force SteamVirtualGamepadInfo."""
 
@@ -391,6 +412,7 @@ class WineCommand:
         umu_store: str = "none",
         sandbox_override: Optional[str] = None,
         forced_dll_overrides: Optional[str] = None,
+        capture_exit_code: bool = False,
     ):
         _environment = environment.copy()
         self.config = self._get_config(config)
@@ -400,6 +422,12 @@ class WineCommand:
         #   None  -> follow the bottle setting
         #   "off" -> run this launch without the dedicated sandbox
         self.sandbox_override = sandbox_override
+        self._exit_code_batch = None
+        self._exit_code_marker = None
+        if capture_exit_code and communicate:
+            command, arguments = self._prepare_exit_code_capture(
+                command, arguments or ""
+            )
         self.arguments = arguments
         self.cwd = self._get_cwd(cwd)
         self.umu_id = umu_id
@@ -425,6 +453,59 @@ class WineCommand:
         self.communicate = communicate
         self.colors = colors
         self.vmtouch_files = None
+        self.returncode = None
+
+    def _prepare_exit_code_capture(
+        self, command: str, arguments: str
+    ) -> tuple[str, str]:
+        temp_dir = os.path.join(
+            ManagerUtils.get_bottle_path(self.config), "drive_c", "windows", "temp"
+        )
+        os.makedirs(temp_dir, exist_ok=True)
+        batch = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".bat",
+            dir=temp_dir,
+            delete=False,
+            newline="",
+        )
+        marker = f"BOTTLES_EXIT_CODE_{os.path.basename(batch.name)[:-4]}"
+        command_line = f"{command} {arguments}".rstrip()
+        with batch:
+            batch.write(
+                "@echo off\r\n"
+                f"{command_line}\r\n"
+                'set "BOTTLES_EXIT_CODE=%ERRORLEVEL%"\r\n'
+                f"echo {marker}=%BOTTLES_EXIT_CODE%\r\n"
+                "exit /b %BOTTLES_EXIT_CODE%\r\n"
+            )
+        self._exit_code_batch = batch.name
+        self._exit_code_marker = marker
+        windows_path = f"C:\\windows\\temp\\{os.path.basename(batch.name)}"
+        return "cmd.exe", f"/d /c {shlex.quote(windows_path)}"
+
+    def _extract_exit_code(self, output: str, fallback: int) -> tuple[str, int]:
+        marker = getattr(self, "_exit_code_marker", None)
+        if not marker:
+            return output, fallback
+
+        pattern = re.compile(rf"^{re.escape(marker)}=(\d+)\r?$", re.MULTILINE)
+        matches = list(pattern.finditer(output))
+        if not matches:
+            return output, fallback
+
+        status = int(matches[-1].group(1))
+        output = pattern.sub("", output).rstrip("\r\n")
+        return output, status
+
+    def _clear_exit_code_capture(self) -> None:
+        batch = getattr(self, "_exit_code_batch", None)
+        if batch:
+            try:
+                os.unlink(batch)
+            except FileNotFoundError:
+                pass
+            self._exit_code_batch = None
 
     def _get_config(self, config: BottleConfig) -> BottleConfig:
         if cnf := config.data.get("config"):
@@ -567,6 +648,7 @@ class WineCommand:
             env.add("PATH", f"{Paths.helpers}:{current_path}")
 
         apply_openxr_preferences(env, config.Runner, runner_path, bottle)
+        apply_identity_bridge(env, config.Runner, runner_path, bottle)
         apply_fex_preferences(env, config.Runner, runner_path)
 
         # Language
@@ -1352,12 +1434,16 @@ raise SystemExit(status if status >= 0 else 128 - status)
                     start_new_session=True,
                 )
             except FileNotFoundError:
+                self._clear_exit_code_capture()
                 return Result(False, message="File not found")
 
         if not self.communicate:
             return Result(True)
 
-        stdout_data, _ = proc.communicate()
+        try:
+            stdout_data, _ = proc.communicate()
+        finally:
+            self._clear_exit_code_capture()
 
         if vmtouch_available and self.config.Parameters.vmtouch:
             # don't call vmtouch_free while running via external terminal
@@ -1378,11 +1464,13 @@ raise SystemExit(status if status >= 0 else 128 - status)
             logging.warning("stdout decoding failed")
             rv = str(stdout_data)[2:-1]  # trim b''
 
-        if proc.returncode:
+        rv, self.returncode = self._extract_exit_code(rv, proc.returncode)
+
+        if self.returncode:
             return Result(
                 False,
                 data=rv,
-                message=f"Command exited with status {proc.returncode}.",
+                message=f"Command exited with status {self.returncode}.",
             )
 
         # "ShellExecuteEx" exception may occur while executing command,

@@ -65,6 +65,25 @@ def _new_cli():
         custom_environment=None,
         arch="win64",
         runner=None,
+        d7vk=None,
+        dxvk=None,
+        vkd3d=None,
+        nvapi=None,
+        latencyflex=None,
+    )
+    return instance
+
+
+def _edit_cli(params):
+    instance = object.__new__(cli.CLI)
+    instance.settings = object()
+    instance.args = SimpleNamespace(
+        bottle="Test",
+        params=params,
+        env_var=None,
+        win=None,
+        runner=None,
+        d7vk=None,
         dxvk=None,
         vkd3d=None,
         nvapi=None,
@@ -140,3 +159,57 @@ def test_umu_waits_for_components_catalog(monkeypatch, capsys):
     ]
     assert waits == [Events.ComponentsOrganizing]
     assert capsys.readouterr().out == ""
+
+
+def test_edit_renderer_applies_registry_before_config(monkeypatch):
+    config = SimpleNamespace()
+    calls = []
+    manager = SimpleNamespace(
+        local_bottles={"Test": config},
+        check_bottles=lambda: None,
+        update_config=lambda bottle, key, value, scope: calls.append(
+            ("config", bottle, key, value, scope)
+        ),
+    )
+    monkeypatch.setattr(cli, "Manager", lambda **_kwargs: manager)
+    monkeypatch.setattr(
+        cli,
+        "RegKeys",
+        lambda bottle: SimpleNamespace(
+            set_renderer=lambda value: calls.append(("registry", bottle, value))
+        ),
+    )
+
+    _edit_cli("renderer:gdi").edit_bottle()
+
+    assert calls == [
+        ("registry", config, "gdi"),
+        ("config", config, "renderer", "gdi", "Parameters"),
+    ]
+
+
+def test_edit_invalid_renderer_keeps_config(monkeypatch, capsys):
+    config = SimpleNamespace()
+    updates = []
+    manager = SimpleNamespace(
+        local_bottles={"Test": config},
+        check_bottles=lambda: None,
+        update_config=lambda *args, **kwargs: updates.append((args, kwargs)),
+    )
+    monkeypatch.setattr(cli, "Manager", lambda **_kwargs: manager)
+
+    class InvalidRegKeys:
+        def __init__(self, _bottle):
+            pass
+
+        def set_renderer(self, _value):
+            raise ValueError("invalid renderer")
+
+    monkeypatch.setattr(cli, "RegKeys", InvalidRegKeys)
+
+    with pytest.raises(SystemExit) as error:
+        _edit_cli("renderer:invalid").edit_bottle()
+
+    assert error.value.code == 1
+    assert capsys.readouterr().err == "invalid renderer\n"
+    assert updates == []

@@ -207,8 +207,22 @@ class TerminalUtils:
             logging.warning("No terminal available.")
             return False
 
+        unset_child_display = False
+        if "DISPLAY" not in env and os.environ.get("DISPLAY"):
+            env["DISPLAY"] = os.environ["DISPLAY"]
+            unset_child_display = True
+
         command = str(command)
         argv = self.build_argv(self.terminal, command)
+
+        if unset_child_display:
+            # Native port of upstream 727a01a3: the terminal emulator itself
+            # needs the host display, but the Wine child launched inside it
+            # must not inherit it (forces the Wayland/EGL backend). Fork
+            # templates all run the command via `sh -c`, so prefixing the
+            # command string is equivalent to upstream's env -u wrapper.
+            command = f"env -u DISPLAY {command}"
+            argv = self.build_argv(self.terminal, command)
 
         logging.info(f"Command: {shlex.join(argv)}")
 

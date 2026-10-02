@@ -18,6 +18,9 @@ ignore = ["F402", "E722", "E741"]
 [tool.ruff.lint.per-file-ignores]
 # Pre-existing upstream unused imports — tracked separately
 "bottles/backend/globals.py" = ["F401"]
+# Post-gi-import module structure inherited from upstream (E402 by design)
+"bottles/backend/identity.py" = ["E402"]
+"bottles/backend/identity_ui.py" = ["E402"]
 "bottles/backend/wine/winecommand.py" = ["F401"]
 "bottles/frontend/cli/cli.py" = ["F401"]
 "bottles/frontend/views/bottle_details.py" = ["F401"]
@@ -91,6 +94,7 @@ module = [
   "bottles.backend.logger",
   "bottles.backend.downloader",
   "bottles.backend.state",
+  "bottles.backend.identity",
   # fvs
   "bottles.fvs.repo",
   # frontend views with pre-existing errors
