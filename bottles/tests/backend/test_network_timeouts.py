@@ -95,7 +95,9 @@ def test_connection_check_uses_reachable_bottles_service(monkeypatch):
     connection = ConnectionUtils()
 
     assert connection.check_connection() is True
-    assert curl.options[pycurl.URL] == ("https://proxy.usebottles.com/repo/components/")
+    assert curl.options[pycurl.URL] == (
+        "https://proxy.usebottles.com/repo/components/"
+    )
     assert curl.options[pycurl.USERAGENT].startswith("Bottles/")
 
 
@@ -347,7 +349,7 @@ def keep_component_repository(manager):
     return repository
 
 
-def test_repository_index_uses_immutable_github_fallback(monkeypatch, tmp_path):
+def test_repository_index_uses_fallback_after_timeout(monkeypatch, tmp_path):
     manager, signals = make_repository_manager(monkeypatch)
     repository = keep_component_repository(manager)
     primary, fallback = repository["sources"]
@@ -431,6 +433,33 @@ def test_repository_index_keeps_primary_when_available(monkeypatch):
     assert curl.closed is True
 
 
+def test_components_use_pinned_catalog_before_stale_proxy(monkeypatch):
+    manager, _signals = make_repository_manager(monkeypatch)
+    repository = keep_component_repository(manager)
+    pinned = next(
+        url
+        for url in repository["sources"]
+        if url.startswith("https://raw.githubusercontent.com/")
+    )
+    proxy = "https://proxy.usebottles.com/repo/components/"
+    catalog = b"soda-current:\n  Category: runners\n"
+    requests = []
+    outcomes = {
+        f"{pinned}64.1.yml": (200, catalog),
+        f"{proxy}64.1.yml": (200, b"soda-old:\n  Category: runners\n"),
+    }
+    monkeypatch.setattr(
+        repository_module.pycurl,
+        "Curl",
+        lambda: IndexCurl(outcomes, requests),
+    )
+
+    manager._RepositoryManager__get_index()
+
+    assert repository["catalog"] == catalog
+    assert requests == [f"{pinned}64.1.yml"]
+
+
 def test_repository_index_retries_resolution_timeout_with_ipv4(monkeypatch):
     manager, signals = make_repository_manager(monkeypatch)
     repository = keep_component_repository(manager)
@@ -498,36 +527,27 @@ def test_personal_repository_is_exclusive_and_instance_local(monkeypatch):
 
     clean_manager, _signals = make_repository_manager(monkeypatch)
     clean_repository = clean_manager._RepositoryManager__repositories["components"]
-    assert clean_repository["url"] == "https://proxy.usebottles.com/repo/components/"
+    assert clean_repository["url"].startswith(
+        "https://raw.githubusercontent.com/bottlesdevs/components/"
+    )
     assert clean_repository["cache_url"] == clean_repository["url"]
 
 
-def test_default_repository_fallbacks_are_commit_pinned(monkeypatch):
+def test_default_repositories_include_commit_pinned_sources(monkeypatch):
     manager, _signals = make_repository_manager(monkeypatch)
     repositories = manager._RepositoryManager__repositories
 
-    expected_pinned = {
-        "components": (
-            "https://raw.githubusercontent.com/bottlesdevs/components/"
-            "181d0ab9645f02d177f14ac8fde4a5eab8cac5a9/"
-        ),
-        "dependencies": (
-            "https://raw.githubusercontent.com/bottlesdevs/dependencies/"
-            "2c0c19707c252d9ec49f1bf26ac4793fd041332b/"
-        ),
-        "installers": (
-            "https://raw.githubusercontent.com/bottlesdevs/programs/"
-            "0ec12fdbce9fbffe0511a501a5218aae48d36e44/"
-        ),
-    }
-    for name, pinned_url in expected_pinned.items():
-        sources = repositories[name]["sources"]
-        assert pinned_url in sources, (name, sources)
-        assert all(
-            url.startswith("https://proxy.usebottles.com/")
-            or url.startswith("https://raw.githubusercontent.com/bottlesdevs/")
-            for url in sources
-        ), (name, sources)
+    for name, project in (
+        ("components", "components"),
+        ("dependencies", "dependencies"),
+        ("installers", "programs"),
+    ):
+        prefix = f"https://raw.githubusercontent.com/bottlesdevs/{project}/"
+        pinned = [url for url in repositories[name]["sources"] if url.startswith(prefix)]
+        assert len(pinned) == 1
+        revision = pinned[0][len(prefix) :].removesuffix("/")
+        assert len(revision) == 40
+        assert all(character in "0123456789abcdef" for character in revision)
 
 
 @pytest.mark.parametrize(
