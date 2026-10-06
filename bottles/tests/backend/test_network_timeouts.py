@@ -95,9 +95,7 @@ def test_connection_check_uses_reachable_bottles_service(monkeypatch):
     connection = ConnectionUtils()
 
     assert connection.check_connection() is True
-    assert curl.options[pycurl.URL] == (
-        "https://proxy.usebottles.com/repo/components/"
-    )
+    assert curl.options[pycurl.URL] == ("https://proxy.usebottles.com/repo/components/")
     assert curl.options[pycurl.USERAGENT].startswith("Bottles/")
 
 
@@ -543,7 +541,9 @@ def test_default_repositories_include_commit_pinned_sources(monkeypatch):
         ("installers", "programs"),
     ):
         prefix = f"https://raw.githubusercontent.com/bottlesdevs/{project}/"
-        pinned = [url for url in repositories[name]["sources"] if url.startswith(prefix)]
+        pinned = [
+            url for url in repositories[name]["sources"] if url.startswith(prefix)
+        ]
         assert len(pinned) == 1
         revision = pinned[0][len(prefix) :].removesuffix("/")
         assert len(revision) == 40

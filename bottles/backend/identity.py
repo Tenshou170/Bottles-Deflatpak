@@ -434,7 +434,10 @@ class SecretTokenStore:
         home_account = None
         if not value and account_id.count(".") == 1 and all(account_id.split(".")):
             object_id, tenant_id = account_id.split(".")
-            home_account = (_normalize_client_id(object_id), _normalize_client_id(tenant_id))
+            home_account = (
+                _normalize_client_id(object_id),
+                _normalize_client_id(tenant_id),
+            )
             value = self._read(self._attributes(client_id, home_account[0]))
         if not value:
             return None

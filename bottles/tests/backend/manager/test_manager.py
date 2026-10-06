@@ -671,3 +671,52 @@ def test_get_programs_can_refresh_cached_results(monkeypatch):
 
     assert Manager.get_programs(manager, config) is cached
     assert Manager.get_programs(manager, config, force_update=True) == []
+
+
+def test_update_config_serializes_concurrent_writers(tmp_path, monkeypatch):
+    """
+    Two RunAsync-style tasks updating the same config must not interleave
+    their read-modify-write + dump cycles: the serialized lock keeps every
+    update in the final bottle.yml and the dump never sees a mutated dict.
+    """
+    from threading import Thread
+
+    manager = object.__new__(Manager)
+    manager._programs_cache = {}
+    config = BottleConfig(Name="Test")
+
+    monkeypatch.setattr(
+        manager_module.ManagerUtils, "get_bottle_path", lambda _config: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "WineBoot",
+        lambda _config: SimpleNamespace(kill=lambda: None, wait=lambda: None),
+    )
+    monkeypatch.setattr(
+        manager_module, "WineServer", lambda _config: SimpleNamespace(wait=lambda: None)
+    )
+
+    def worker(index: int) -> None:
+        for n in range(5):
+            Manager.update_config(
+                manager,
+                config,
+                f"VAR_{index}_{n}",
+                f"value-{index}-{n}",
+                scope="Environment_Variables",
+            )
+
+    threads = [Thread(target=worker, args=(i,)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    dumped = BottleConfig.load(str(tmp_path / "bottle.yml")).data
+    for index in range(4):
+        for n in range(5):
+            assert dumped.Environment_Variables[f"VAR_{index}_{n}"] == (
+                f"value-{index}-{n}"
+            )
+    assert config.Update_Date is not None

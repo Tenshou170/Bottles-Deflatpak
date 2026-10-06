@@ -27,7 +27,7 @@ from copy import deepcopy
 from datetime import datetime
 from gettext import gettext as _
 from glob import glob
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 import pathvalidate
@@ -121,6 +121,9 @@ class Manager(metaclass=Singleton):
     latencyflex_available = []
     local_bottles: Dict[str, BottleConfig] = {}
     _programs_cache: Dict[str, List[dict]] = {}
+    # Guards update_config()'s read-modify-write + dump cycle against
+    # concurrent RunAsync tasks touching the same BottleConfig.
+    _config_update_lock = Lock()
     supported_runtimes = {}
     supported_winebridge = {}
     supported_wine_runners = {}
@@ -1651,41 +1654,45 @@ class Manager(metaclass=Singleton):
         _name = config.Name
         logging.info(f"Setting Key {key}={value} for bottle {_name}…")
 
-        _config = config.copy()
-        wineboot = WineBoot(_config)
-        wineserver = WineServer(_config)
-        bottle_path = ManagerUtils.get_bottle_path(config)
+        # Serialize read-modify-write cycles on shared BottleConfig objects:
+        # concurrent RunAsync tasks editing the same config could otherwise
+        # lose updates or make yaml.dump see a concurrently-mutated dict.
+        with self._config_update_lock:
+            _config = config.copy()
+            wineboot = WineBoot(_config)
+            wineserver = WineServer(_config)
+            bottle_path = ManagerUtils.get_bottle_path(config)
 
-        if key == "sync" and config.Parameters.sync != value:
-            """
-            Workaround <https://github.com/bottlesdevs/Bottles/issues/916>
-            Sync type change requires wineserver restart or wine will fail
-            to execute any command.
-            """
-            wineboot.kill()
-            wineserver.wait()
+            if key == "sync" and config.Parameters.sync != value:
+                """
+                Workaround <https://github.com/bottlesdevs/Bottles/issues/916>
+                Sync type change requires wineserver restart or wine will fail
+                to execute any command.
+                """
+                wineboot.kill()
+                wineserver.wait()
 
-        if scope:
-            if remove:
-                del config[scope][key]
-            elif config[scope].get(key) and fallback:
-                config[scope][f"{key}-{uuid.uuid4()}"] = value
+            if scope:
+                if remove:
+                    del config[scope][key]
+                elif config[scope].get(key) and fallback:
+                    config[scope][f"{key}-{uuid.uuid4()}"] = value
+                else:
+                    config[scope][key] = value
             else:
-                config[scope][key] = value
-        else:
-            if remove:
-                del config[key]
-            elif config.get(key) and fallback:
-                config[f"{key}-{uuid.uuid4()}"] = value
-            else:
-                config[key] = value
+                if remove:
+                    del config[key]
+                elif config.get(key) and fallback:
+                    config[f"{key}-{uuid.uuid4()}"] = value
+                else:
+                    config[key] = value
 
-        config.dump(os.path.join(bottle_path, "bottle.yml"))
+            config.dump(os.path.join(bottle_path, "bottle.yml"))
 
-        config.Update_Date = str(datetime.now())
+            config.Update_Date = str(datetime.now())
 
-        if scope == "External_Programs":
-            self._programs_cache.pop(config.Name, None)
+            if scope == "External_Programs":
+                self._programs_cache.pop(config.Name, None)
 
         if config.Environment == "Steam":
             self.steam_manager.update_bottle(config)
