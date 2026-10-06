@@ -120,6 +120,9 @@ def test_adaptive_launch_requires_soda(runner, supported):
         switch_adaptive_launch=Mock(),
         row_adaptive_launch=Mock(),
         _adaptive_launch_warning=Mock(),
+        switch_eagle_tracing=Mock(),
+        row_eagle_tracing=Mock(),
+        **{"_PreferencesView__toggle_feature_cb": Mock()},
     )
 
     PreferencesView._PreferencesView__update_adaptive_launch_support(view)

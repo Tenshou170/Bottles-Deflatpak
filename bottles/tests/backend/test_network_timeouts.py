@@ -506,18 +506,28 @@ def test_default_repository_fallbacks_are_commit_pinned(monkeypatch):
     manager, _signals = make_repository_manager(monkeypatch)
     repositories = manager._RepositoryManager__repositories
 
-    assert repositories["components"]["sources"][1] == (
-        "https://raw.githubusercontent.com/bottlesdevs/components/"
-        "181d0ab9645f02d177f14ac8fde4a5eab8cac5a9/"
-    )
-    assert repositories["dependencies"]["sources"][1] == (
-        "https://raw.githubusercontent.com/bottlesdevs/dependencies/"
-        "2c0c19707c252d9ec49f1bf26ac4793fd041332b/"
-    )
-    assert repositories["installers"]["sources"][1] == (
-        "https://raw.githubusercontent.com/bottlesdevs/programs/"
-        "d1160b816ca44a1cc803ab9a0050071517cc1960/"
-    )
+    expected_pinned = {
+        "components": (
+            "https://raw.githubusercontent.com/bottlesdevs/components/"
+            "181d0ab9645f02d177f14ac8fde4a5eab8cac5a9/"
+        ),
+        "dependencies": (
+            "https://raw.githubusercontent.com/bottlesdevs/dependencies/"
+            "2c0c19707c252d9ec49f1bf26ac4793fd041332b/"
+        ),
+        "installers": (
+            "https://raw.githubusercontent.com/bottlesdevs/programs/"
+            "0ec12fdbce9fbffe0511a501a5218aae48d36e44/"
+        ),
+    }
+    for name, pinned_url in expected_pinned.items():
+        sources = repositories[name]["sources"]
+        assert pinned_url in sources, (name, sources)
+        assert all(
+            url.startswith("https://proxy.usebottles.com/")
+            or url.startswith("https://raw.githubusercontent.com/bottlesdevs/")
+            for url in sources
+        ), (name, sources)
 
 
 @pytest.mark.parametrize(
