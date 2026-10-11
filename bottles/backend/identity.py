@@ -518,12 +518,16 @@ def _callback_socket_path(state: str) -> str:
     return os.path.join(Paths.temp, "identity-callbacks", f"{name}.sock")
 
 
-def _callback_socket_address(path: str) -> tuple[int, str]:
+def _identity_socket_address(path: str) -> tuple[int, str]:
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o700, exist_ok=True)
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(directory, flags)
-    os.fchmod(descriptor, 0o700)
+    try:
+        os.fchmod(descriptor, 0o700)
+    except OSError:
+        os.close(descriptor)
+        raise
     return descriptor, f"/proc/self/fd/{descriptor}/{os.path.basename(path)}"
 
 
@@ -564,7 +568,7 @@ def forward_identity_callback(uri: str, activation_token: str = "") -> bool:
         payload = uri.encode("utf-8")
         if len(payload) > MAX_CALLBACK_URI:
             return False
-        descriptor, address = _callback_socket_address(_callback_socket_path(state))
+        descriptor, address = _identity_socket_address(_callback_socket_path(state))
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(2)
@@ -592,7 +596,7 @@ class RedirectListener:
         self.disconnect_event = None
         self.result = None
         self.socket_path = _callback_socket_path(state)
-        self.socket_directory, socket_address = _callback_socket_address(
+        self.socket_directory, socket_address = _identity_socket_address(
             self.socket_path
         )
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -723,10 +727,10 @@ class MicrosoftIdentityProvider:
 
     @staticmethod
     def _normalize_scopes(scopes: str) -> str:
-        if scopes in UNSUPPORTED_IDENTITY_RESOURCES:
-            raise AuthenticationError("unsupported identity resource")
-        scopes = SCOPE_ALIASES.get(scopes, scopes)
         requested = scopes.split()
+        if any(item in UNSUPPORTED_IDENTITY_RESOURCES for item in requested):
+            raise AuthenticationError("unsupported identity resource")
+        requested = [SCOPE_ALIASES.get(item, item) for item in requested]
         defaults = ["openid", "profile", "email", "offline_access"]
         return " ".join(defaults + [item for item in requested if item not in defaults])
 
@@ -914,7 +918,7 @@ class MicrosoftIdentityProvider:
             else:
                 reason = "invalid audience type"
             logging.warning(f"ID token audience rejected: {reason}", jn=False)
-            raise AuthenticationError("unexpected ID token audience")
+            raise AuthenticationError(f"unexpected ID token audience ({reason})")
         if expected_nonce and claims.get("nonce") != expected_nonce:
             raise AuthenticationError("unexpected ID token nonce")
         now = int(time.time())
@@ -1151,18 +1155,15 @@ class IdentityBridgeServer:
         return False
 
     def serve(self, idle_timeout: int = 600) -> None:
-        os.makedirs(os.path.dirname(self.socket_path), mode=0o700, exist_ok=True)
-        try:
-            # Hardening only: the umask below already protects the socket
-            # itself, and shared temp dirs (e.g. /tmp) are not ours to chmod.
-            os.chmod(os.path.dirname(self.socket_path), 0o700)
-        except OSError:
-            pass
         old_umask = os.umask(0o077)
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        socket_directory = None
         bound = False
         try:
-            listener.bind(self.socket_path)
+            socket_directory, socket_address = _identity_socket_address(
+                self.socket_path
+            )
+            listener.bind(socket_address)
             bound = True
             listener.listen(4)
             listener.settimeout(1)
@@ -1191,6 +1192,8 @@ class IdentityBridgeServer:
                     self.last_activity = time.monotonic()
         finally:
             listener.close()
+            if socket_directory is not None:
+                os.close(socket_directory)
             os.umask(old_umask)
             if bound:
                 try:
@@ -1212,14 +1215,19 @@ def _reap_bridge(context: str, bridge: _BridgeProcess) -> None:
 
 def _bridge_ready(socket_path: str) -> bool:
     request_id = secrets.randbits(32)
+    descriptor = None
     try:
+        descriptor, address = _identity_socket_address(socket_path)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(0.2)
-            connection.connect(socket_path)
+            connection.connect(address)
             connection.sendall(encode_message(Message(OP_PING, request_id, 0, {})))
             response = receive_message(connection)
     except (OSError, ProtocolError):
         return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     return (
         response.opcode == OP_PING | RESPONSE_BIT
         and response.request_id == request_id

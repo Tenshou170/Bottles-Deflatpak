@@ -1,4 +1,6 @@
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 
@@ -10,7 +12,13 @@ def _setup_test_env() -> None:
         sys.path.insert(0, repo_root)
 
     # Some upstream tests read TMPDIR directly; not every session exports it.
-    os.environ.setdefault("TMPDIR", tempfile.gettempdir())
+    # Point it at a user-owned directory: upstream's bridge-readiness code
+    # fchmod()s the socket's parent directory, which fails with EPERM on a
+    # root-owned shared /tmp when tests run as a regular user (upstream CI
+    # runs as root, so their suite never sees this).
+    tmpdir = tempfile.mkdtemp(prefix="bottles-tests-")
+    os.environ["TMPDIR"] = tmpdir
+    atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
 
     build_data = os.path.join(repo_root, "build", "data")
     data_dir = os.path.join(repo_root, "data")
