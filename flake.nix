@@ -16,7 +16,10 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true; # required for lsfg-vk (cc-by-nc-nd-4.0)
+        };
         version = nixpkgs.lib.removeSuffix "\n" (builtins.readFile ./VERSION);
 
         bottles-deflatpak-unwrapped = pkgs.callPackage ./nix/package.nix {
@@ -51,6 +54,9 @@
             libadwaita
             appstream-glib
             desktop-file-utils
+            dbus
+            xvfb
+            xvfb-run
           ];
           buildInputs =
             bottles-deflatpak-unwrapped.buildInputs ++ bottles-deflatpak-unwrapped.propagatedBuildInputs;

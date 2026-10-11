@@ -14,6 +14,11 @@
   libadwaita,
   cabextract,
   _7zz,
+  libsecret,
+  libportal-gtk4,
+  fvs2,
+  vulkan-tools,
+  lsfg-vk,
   xdpyinfo,
   imagemagick,
   lsb-release,
@@ -63,6 +68,8 @@ python3Packages.buildPythonApplication {
     gtksourceview5
     libadwaita
     libportal
+    libportal-gtk4
+    libsecret
   ];
 
   propagatedBuildInputs =
@@ -92,14 +99,13 @@ python3Packages.buildPythonApplication {
       imagemagick
       vkbasalt-cli
       bubblewrap
-      # fvs2 (versioning backend, Go binary) is not yet in nixpkgs.
-      # Install it manually from https://github.com/fvs-lab/fvs2 if you
-      # need bottle snapshot/versioning support. Bottles runs fine without it.
+      fvs2
+      vulkan-tools
       umu-launcher
       file
       kmod
       obs-vkcapture
-
+      lsfg-vk
       gamemode
       gamescope
       mangohud
