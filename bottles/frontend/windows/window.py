@@ -116,6 +116,7 @@ class BottlesWindow(Adw.ApplicationWindow):
         self._pending_crash_log = None
         self._show_custom_path_warning = False
         self._winebridge_prompt_attempts = 0
+        self._winebridge_check_running = False
         self.app = kwargs.get("application")
         self.set_icon_name(APP_ID)
 
@@ -280,26 +281,42 @@ class BottlesWindow(Adw.ApplicationWindow):
             GLib.timeout_add_seconds(1, self.__maybe_prompt_winebridge_update)
             return
 
-        status = self.manager.winebridge_update_status()
-        needs_update = status.get("needs_latest", False)
-        missing = status.get("missing", False)
-        latest = status.get("latest_supported")
-        installed = status.get("installed_identifier")
-        offline = not self.utils_conn.check_connection()
-
-        if not (needs_update or missing):
+        if self._winebridge_check_running:
             return
+        self._winebridge_check_running = True
 
-        self._winebridge_dialog_shown = True
+        def check():
+            # check_connection() pings up to three hosts with a 10s timeout
+            # each, so it must not run on the main thread.
+            status = self.manager.winebridge_update_status()
+            return status, not self.utils_conn.check_connection()
 
-        dialog = WineBridgeUpdateDialog(
-            self,
-            manager=self.manager,
-            latest_version=latest,
-            installed_version=installed,
-            offline=offline,
-        )
-        dialog.present()
+        def applied(result, error=False):
+            self._winebridge_check_running = False
+            if error or not result:
+                return
+
+            status, offline = result
+            needs_update = status.get("needs_latest", False)
+            missing = status.get("missing", False)
+            latest = status.get("latest_supported")
+            installed = status.get("installed_identifier")
+
+            if not (needs_update or missing):
+                return
+
+            self._winebridge_dialog_shown = True
+
+            dialog = WineBridgeUpdateDialog(
+                self,
+                manager=self.manager,
+                latest_version=latest,
+                installed_version=installed,
+                offline=offline,
+            )
+            dialog.present()
+
+        RunAsync(check, callback=applied)
 
     def __on_start(self):
         """

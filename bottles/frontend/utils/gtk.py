@@ -167,3 +167,34 @@ class GtkUtils:
         """Retrieve the parent window from a widget."""
         toplevels = Gtk.Window.get_toplevels()
         return toplevels.get_item(0)
+
+    @staticmethod
+    def populate_in_chunks(items, build, chunk_size=8, cancelled=None):
+        """Build widgets in batches across main-loop iterations.
+
+        Building hundreds of rows at once blocks the GTK main thread and
+        freezes the UI. The first batch runs synchronously, the rest are
+        spread over idle callbacks. Aborts early once ``cancelled()`` is True.
+        """
+        items = list(items)
+        if not items:
+            return
+        if cancelled is None:
+            cancelled = lambda: False  # noqa: E731
+
+        state = {"index": 0}
+
+        def process_chunk():
+            if cancelled():
+                return False
+            end = min(state["index"] + chunk_size, len(items))
+            while state["index"] < end:
+                if cancelled():
+                    return False
+                build(items[state["index"]])
+                state["index"] += 1
+            if state["index"] < len(items):
+                GLib.idle_add(process_chunk)
+            return False
+
+        process_chunk()

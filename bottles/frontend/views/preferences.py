@@ -29,7 +29,7 @@ from bottles.backend.state import EventManager, Events
 from bottles.backend.utils.generic import sort_by_version
 from bottles.backend.utils.manager import ManagerUtils
 from bottles.backend.utils.threading import RunAsync
-from bottles.frontend.utils.gtk import FONT_SCALE_VALUES
+from bottles.frontend.utils.gtk import FONT_SCALE_VALUES, GtkUtils
 from bottles.frontend.utils.localization import (
     UI_LANGUAGES,
     get_ui_language_environment,
@@ -163,6 +163,8 @@ class PreferencesWindow(Adw.PreferencesDialog):
 
         self.__cache_registry = []
         self.__registry = []
+        # Bumped on rebuild so in-flight chunked fills abort.
+        self.__list_generation = 0
 
         # bind widgets
         self.settings.bind(
@@ -344,6 +346,7 @@ class PreferencesWindow(Adw.PreferencesDialog):
         self.__update_umu_status()
 
     def empty_list(self):
+        self.__list_generation += 1
         for w in self.__registry:
             parent = w.get_parent()
             if parent:
@@ -784,19 +787,29 @@ class PreferencesWindow(Adw.PreferencesDialog):
                     supported_component_items.insert(i, offline_entry)
                     j += 1
                 i += 1
-        count = 0
-        for component in supported_component_items:
-            if not self.__display_unstable_candidate(component):
-                continue
+        candidates = [
+            component
+            for component in supported_component_items
+            if self.__display_unstable_candidate(component)
+        ]
+
+        generation = self.__list_generation
+
+        def build(component):
             _entry = ComponentEntry(self.window, component, component_type)
             if hasattr(list_component, "add_row"):
                 list_component.add_row(_entry)
             else:
                 list_component.add(_entry)
             self.__registry.append(_entry)
-            count += 1
 
-        return count
+        GtkUtils.populate_in_chunks(
+            candidates,
+            build,
+            cancelled=lambda: generation != self.__list_generation,
+        )
+
+        return len(candidates)
 
     def populate_dlls_list(self):
         dll_components = [
@@ -818,13 +831,23 @@ class PreferencesWindow(Adw.PreferencesDialog):
     def __on_runner_expander_expanded(self, expander, _pspec, runner_struct):
         if not expander.get_expanded() or runner_struct["expanded"]:
             return
-        for runner_data in runner_struct["expander_queue"]:
+        runner_struct["expanded"] = True
+
+        generation = self.__list_generation
+
+        def build(runner_data):
             _entry = ComponentEntry(
                 self.window, runner_data, runner_struct["runner_type"]
             )
             expander.add_row(_entry)
             self.__registry.append(_entry)
-        runner_struct["expanded"] = True
+
+        # Groups like Kron4ek hold hundreds of runners, so fill in batches.
+        GtkUtils.populate_in_chunks(
+            runner_struct["expander_queue"],
+            build,
+            cancelled=lambda: generation != self.__list_generation,
+        )
 
     def __populate_runners_helper(
         self, runner_type, supported_runners_dict, identifiable_runners_struct
