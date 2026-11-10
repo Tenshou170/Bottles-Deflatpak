@@ -1,3 +1,10 @@
+bottles-deflatpak (67.6) unstable; urgency=medium
+
+  * Sync with upstream 67.6 release.
+  * Keep the native bwrap sandbox; remove reintroduced Flatpak/cpak code.
+
+ -- Tenshou Zmeyev <tenshou170@gmail.com>  Tue, 10 Nov 2026 23:20:00 +0600
+
 bottles-deflatpak (67.4) unstable; urgency=medium
 
   * Sync with upstream 67.4 release.

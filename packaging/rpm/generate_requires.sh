@@ -8,7 +8,7 @@ REQUIREMENTS_SPEC="requires.txt"
 [ -f ${REQUIREMENTS_FILE} ] && rm -vf ${REQUIREMENTS_FILE}
 # Make sure sources are present
 spectool -gSf ${SPEC_FILE} 2>/dev/null
-TARBALL="$(rpmspec --parse bottles.spec 2>/dev/null | grep Source0 | sed -r 's/^.*(Bottles.*)/\1/')"
+TARBALL="$(rpmspec --parse bottles.spec 2>/dev/null | grep -m1 '^Source0:' | sed -r 's/^Source0:[[:space:]]*//')"
 TAR_REQ_FILE="$(tar tzf ${TARBALL} | grep ${REQUIREMENTS_FILE})"
 tar -x ${TAR_REQ_FILE} --strip-components=1 -zf ${TARBALL}
 

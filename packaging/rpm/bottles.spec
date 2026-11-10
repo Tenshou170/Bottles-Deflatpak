@@ -1,5 +1,5 @@
 Name:       bottles-deflatpak
-Version:    67.4
+Version:    67.6
 Release:    1
 Summary:    Run Windows in a Bottle (native fork, no Flatpak)
 Provides:   bottles = %{version}-%{release}
@@ -44,6 +44,7 @@ Requires:       umu-launcher            %dnl # needed for UMU support
 # Use `generate_requires.sh` to generate Python runtime dependencies
 # using upstream's `requirements.txt`, which is included in the tarball,
 # but not used by Meson.
+Requires:       python3dist(pygobject)
 Requires:       python3dist(pyyaml)
 Requires:       python3dist(pycurl)
 Requires:       python3dist(chardet)
@@ -136,6 +137,11 @@ desktop-file-validate %buildroot%_datadir/applications/*.desktop
 
 
 %changelog
+* Tue Nov 10 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 67.6-1
+- Sync with upstream 67.6
+- Keep the native bwrap sandbox and drop reintroduced Flatpak/cpak code
+- Build from the signable tarball, not a Flatpak manifest
+
 * Wed Sep 09 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 67.4-1
 - Sync with upstream 67.4
 - Update Soda 11.0-10 references

@@ -16,6 +16,25 @@ jobs:
         run: |
           VERSION=$(grep -oP "version: '\K[^']+" meson.build | head -1)
           echo "version=v$VERSION" >> $GITHUB_OUTPUT
+      - name: Check packaging versions match meson.build
+        run: |
+          VERSION=$(grep -oP "version: '\K[^']+" meson.build | head -1)
+          SPEC=$(grep -oP '^Version:\s+\K\S+' packaging/rpm/bottles.spec)
+          PKGBUILD=$(grep -oP '^pkgver=\K\S+' packaging/aur/PKGBUILD)
+          DEB=$(grep -oP '^bottles-deflatpak \(\K[^)]+' packaging/deb/debian/changelog | head -1)
+          NIX=$(cat VERSION)
+          status=0
+          check() {
+            if [ "$2" != "$VERSION" ]; then
+              echo "::error file=$1::version '$2' does not match meson.build's '$VERSION'"
+              status=1
+            fi
+          }
+          check packaging/rpm/bottles.spec "$SPEC"
+          check packaging/aur/PKGBUILD "$PKGBUILD"
+          check packaging/deb/debian/changelog "$DEB"
+          check VERSION "$NIX"
+          exit $status
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
