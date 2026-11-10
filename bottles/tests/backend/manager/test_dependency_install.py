@@ -63,8 +63,8 @@ def _dependency_manager(state: Recorder, download_ok: bool = True):
         supported_dependencies={},
     )
     dependency_manager = DependencyManager.__new__(DependencyManager)
-    dependency_manager._DependencyManager__manager = manager
-    dependency_manager._DependencyManager__manifests = {}
+    setattr(dependency_manager, "_DependencyManager__manager", manager)
+    setattr(dependency_manager, "_DependencyManager__manifests", {})
     return dependency_manager
 
 

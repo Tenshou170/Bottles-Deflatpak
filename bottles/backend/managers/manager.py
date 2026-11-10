@@ -958,9 +958,18 @@ class Manager(metaclass=Singleton):
         return True
 
     def get_managed_wine_runners(self) -> list[str]:
-        """Return managed runners that can create regular Wine bottles."""
+        """Return managed runners that can create regular Wine bottles.
+
+        Steam compatibility tools are listed in ``runners_available`` as well,
+        but they are external: counting them here made a distro-packaged Proton
+        (e.g. in ``/usr/share/steam/compatibilitytools.d``) look like an
+        installed Bottles runner and suppressed the first-run setup dialog.
+        """
+        external = getattr(self, "external_runners", set())
         return [
-            runner for runner in self.runners_available if not runner.startswith("sys-")
+            runner
+            for runner in self.runners_available
+            if not runner.startswith("sys-") and runner not in external
         ]
 
     def check_runtimes(self, install_latest: bool = True) -> bool:

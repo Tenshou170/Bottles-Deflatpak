@@ -985,10 +985,10 @@ def test_move_keeps_original_after_failure(tmp_path, monkeypatch, failure):
         monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=0))
     elif failure == "copy":
 
-        def fail(*args, **kwargs):
+        def fail_copy(*args, **kwargs):
             raise OSError("copy failed")
 
-        monkeypatch.setattr(shutil, "copytree", fail)
+        monkeypatch.setattr(shutil, "copytree", fail_copy)
     elif failure == "verification":
         copytree = shutil.copytree
 
@@ -1003,12 +1003,12 @@ def test_move_keeps_original_after_failure(tmp_path, monkeypatch, failure):
     elif failure == "registration":
         rename = os.rename
 
-        def fail(source_path, target):
+        def fail_rename(source_path, target, *args, **kwargs):
             if str(source_path).endswith("replacement"):
                 raise OSError("registration failed")
             return rename(source_path, target)
 
-        monkeypatch.setattr(os, "rename", fail)
+        monkeypatch.setattr(os, "rename", fail_rename)
 
     result = BackupManager.move_bottle(config, str(destination))
 

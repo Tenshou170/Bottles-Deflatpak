@@ -137,6 +137,16 @@ def test_managed_proton_runner_satisfies_runner_setup_check():
     assert manager.get_managed_wine_runners() == ["GE-Proton10-4"]
 
 
+def test_external_steam_runner_does_not_satisfy_runner_setup_check():
+    manager = object.__new__(Manager)
+    manager.runners_available = ["proton-cachyos-slr", "sys-wine-11.0"]
+    manager.external_runners = {"proton-cachyos-slr"}
+
+    # A Proton shipped by Steam/the distro is not a Bottles-managed runner, so
+    # first-run setup must still prompt for one.
+    assert manager.get_managed_wine_runners() == []
+
+
 def test_manager_cli_checks_connection_when_online(mocker):
     check_connection = mocker.patch.object(
         ConnectionUtils,
