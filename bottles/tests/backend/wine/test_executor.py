@@ -95,6 +95,51 @@ def test_gamescope_mangohud_payload_exits_with_the_game(monkeypatch, tmp_path):
     assert result.returncode == 23
 
 
+@pytest.mark.parametrize("refresh_ok", [True, False])
+def test_changed_fonts_refresh_before_launch(monkeypatch, tmp_path, refresh_ok):
+    fonts = tmp_path / "drive_c/windows/Fonts"
+    fonts.mkdir(parents=True)
+    stamp = tmp_path / ".fonts_stamp"
+    commands = []
+    events = []
+
+    class Command:
+        def __init__(self, _config, **kwargs):
+            commands.append(kwargs)
+
+        def run(self):
+            events.append("refresh")
+            return Result(refresh_ok)
+
+    monkeypatch.setattr("bottles.backend.wine.wineprogram.WineCommand", Command)
+    monkeypatch.setattr(ManagerUtils, "get_bottle_path", lambda _config: str(tmp_path))
+    monkeypatch.setattr(
+        "bottles.backend.wine.executor.SignalManager.send", lambda *_args: None
+    )
+    executor = WineExecutor.__new__(WineExecutor)
+    executor.config = _make_config()
+    executor.exec_path = executor._raw_exec_path = r"C:\fixture.exe"
+    executor.exec_type = "exe"
+
+    def launch():
+        events.append("launch")
+        return Result(True)
+
+    executor._WineExecutor__launch_with_bridge = launch
+
+    assert executor.run().ok
+    assert events == ["refresh", "launch"]
+    assert commands[0]["command"] == "wineboot -u /nogui"
+    assert commands[0]["communicate"] is True
+    assert commands[0]["forced_dll_overrides"] == "mscoree=d"
+    assert stamp.exists() == refresh_ok
+    if refresh_ok:
+        assert float(stamp.read_text()) == fonts.stat().st_mtime
+
+    assert executor.run().ok
+    assert len(commands) == (1 if refresh_ok else 2)
+
+
 def test_build_placeholder_map_uses_program_values():
     config = _make_config()
     program = {
@@ -628,6 +673,7 @@ def test_winecommand_reports_nonzero_exit_status(monkeypatch):
     command.terminal = False
     command.sandbox_override = None
     command.communicate = True
+    command.capture_stderr = False
     command.cwd = None
 
     result = command.run()
@@ -636,6 +682,44 @@ def test_winecommand_reports_nonzero_exit_status(monkeypatch):
     assert result.data == "registry failed"
     assert result.message == "Command exited with status 7."
     assert command.returncode == 7
+
+
+@pytest.mark.parametrize("sandboxed", [False, True])
+@pytest.mark.parametrize("capture_stderr", [False, True])
+def test_winecommand_can_capture_version_output_on_stderr(
+    monkeypatch, sandboxed, capture_stderr
+):
+    process = SimpleNamespace(
+        returncode=0, communicate=lambda: (b"", b"owned Wine diagnostic\nwin10\n")
+    )
+    captured = {}
+
+    def launch(*_args, **kwargs):
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(winecommand.subprocess, "Popen", launch)
+    command = WineCommand.__new__(WineCommand)
+    command.runner = "/usr/bin/wine"
+    command.env = {}
+    command.command = "wine winecfg -v"
+    command.config = _make_config()
+    command.config.Parameters.sandbox = sandboxed
+    command.terminal = False
+    command.sandbox_override = None
+    command.communicate = True
+    command.capture_stderr = capture_stderr
+    command.cwd = None
+    monkeypatch.setattr(
+        command, "_get_sandbox_manager", lambda: SimpleNamespace(run=launch)
+    )
+
+    result = command.run()
+
+    assert result.ok
+    assert result.data == ("owned Wine diagnostic\nwin10\n" if capture_stderr else "")
+    if not sandboxed:
+        assert captured["stderr"] == (subprocess.PIPE if capture_stderr else None)
 
 
 def test_winecommand_reports_full_windows_exit_status(monkeypatch):
@@ -655,6 +739,7 @@ def test_winecommand_reports_full_windows_exit_status(monkeypatch):
     command.terminal = False
     command.sandbox_override = None
     command.communicate = True
+    command.capture_stderr = False
     command.cwd = None
     command._exit_code_batch = None
     command._exit_code_marker = "BOTTLES_EXIT_CODE_test"
@@ -1104,7 +1189,8 @@ def test_default_wine_environment_inherits_xmodifiers(monkeypatch):
         ("ntsync", True, {"WINENTSYNC": "1"}),
         ("ntsync", False, {"WINEFSYNC": "1"}),
         ("esync", False, {"WINEESYNC": "1"}),
-        ("fsync", False, {"WINEFSYNC": "1"}),
+        ("fsync", False, {"WINEFSYNC": "1", "PROTON_NO_NTSYNC": "1"}),
+        ("fsync", True, {"WINEFSYNC": "1", "PROTON_NO_NTSYNC": "1"}),
     ],
 )
 def test_winecommand_applies_selected_sync_environment(
@@ -1322,7 +1408,18 @@ def test_disabled_proton_options_are_not_translated(monkeypatch):
     assert "ENABLE_HDR_WSI" not in resolved
 
 
-def test_winecommand_filters_host_environment(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "runner_binary,override",
+    [
+        ("/usr/bin/wine", None),
+        ("/runners/Soda with spaces/bin/wine64", None),
+        ("/runners/GE-Proton/files/bin/wine", None),
+        ("/runners/Soda/bin/wine", "/custom/wine"),
+    ],
+)
+def test_winecommand_filters_host_environment(
+    monkeypatch, tmp_path, runner_binary, override
+):
     bottle_path = tmp_path / "TestBottle"
     bottle_path.mkdir()
     runner_path = tmp_path / "runner"
@@ -1352,6 +1449,7 @@ def test_winecommand_filters_host_environment(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DISPLAY", ":1")
     monkeypatch.setenv("SHOULD_NOT_PASS", "secret")
+    monkeypatch.setenv("WINE", "/wrong/inherited/wine")
 
     monkeypatch.setattr(
         "bottles.backend.wine.winecommand.ManagerUtils.get_bottle_path",
@@ -1396,21 +1494,23 @@ def test_winecommand_filters_host_environment(monkeypatch, tmp_path):
     winecmd.config = config
     winecmd.minimal = True
     winecmd.arguments = ""
-    winecmd.runner = "/usr/bin/wine"
+    winecmd.runner = shlex.quote(runner_binary)
     winecmd.runner_runtime = ""
     winecmd.proton_script = None
     winecmd.umu_proton_path = None
     winecmd.gamescope_activated = False
     winecmd.terminal = False
 
-    env = winecmd.get_env()
+    env = winecmd.get_env({"WINE": override} if override else {})
+    assert env["WINE"] == (override or runner_binary)
     assert env["DISPLAY"] == ":1"
     assert "DXVK_HDR" not in env
     assert "SHOULD_NOT_PASS" not in env
     assert str(runner_path / "lib/wine/aarch64-unix") in env["LD_LIBRARY_PATH"]
 
 
-def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
+@pytest.mark.parametrize("wayland", (False, True))
+def test_winecommand_prepares_proton_environment(monkeypatch, tmp_path, wayland):
     bottle_path = tmp_path / "TestBottle"
     bottle_path.mkdir()
     proton_path = tmp_path / "GE-Proton"
@@ -1430,9 +1530,10 @@ def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
     stale_dll = bottle_path / "drive_c/windows/system32/libvkd3d-1.dll"
     stale_dll.parent.mkdir(parents=True)
     stale_dll.write_bytes(b"stale")
+    os.utime(stale_dll, (0, 0))
 
     config = BottleConfig(Name="Test", Path=str(bottle_path), Runner="GE-Proton")
-    config.Parameters = BottleParams()
+    config.Parameters = BottleParams(wayland=wayland)
     config.Parameters.use_runtime = False
     config.Parameters.use_eac_runtime = False
     config.Parameters.use_be_runtime = False
@@ -1466,6 +1567,11 @@ def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
         "bottles.backend.wine.winecommand.DisplayUtils.check_nvidia_device",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "bottles.backend.wine.winecommand.DisplayUtils.display_server_type",
+        lambda: "wayland",
+    )
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
 
     def _fake_gpu(self):
         return {
@@ -1488,7 +1594,14 @@ def test_winecommand_syncs_proton_vkd3d(monkeypatch, tmp_path):
     winecmd.gamescope_activated = False
     winecmd.terminal = False
 
-    winecmd.get_env(return_clean_env=True)
+    resolved = winecmd.get_env(return_clean_env=True)
+
+    if wayland:
+        assert resolved["WINE_DISABLE_FULLSCREEN_HACK"] == "1"
+        assert resolved["PROTON_NO_STEAMINPUT"] == "1"
+        assert "DISPLAY" not in resolved
+    else:
+        assert "WINE_DISABLE_FULLSCREEN_HACK" not in resolved
 
     for dll in ["libvkd3d-1.dll", "libvkd3d-shader-1.dll"]:
         assert (bottle_path / "drive_c/windows/system32" / dll).read_bytes() == b"win64"
@@ -1864,36 +1977,256 @@ def test_wine_executor_fonts_stamp_initializes_without_wineboot(monkeypatch, tmp
     assert len(wineboot_calls) == 0
 
 
-def test_wine_executor_fonts_stamp_updates_wineboot_when_stale(monkeypatch, tmp_path):
-    bottle = tmp_path / "bottle"
-    fonts_dir = bottle / "drive_c" / "windows" / "Fonts"
-    fonts_dir.mkdir(parents=True)
-    stamp_file = bottle / ".fonts_stamp"
-    stamp_file.write_text("100.0")
+def _installer_executor(monkeypatch, exec_type, success_codes, returncode=0):
+    """A WineExecutor whose installer exits with `returncode` on the Wine side."""
+    if returncode:
+        result = Result(False, message=f"Command exited with status {returncode}.")
+    else:
+        result = Result(True)
 
-    os.utime(fonts_dir, (200, 200))
+    class FakeWineCommand:
+        def __init__(self, *_args, **_kwargs):
+            self.returncode = None
 
-    wineboot_calls = []
+        def run(self):
+            self.returncode = returncode
+            return result
 
-    class FakeWineBoot:
-        def __init__(self, config):
-            pass
-
-        def update(self):
-            wineboot_calls.append("update")
-
-    monkeypatch.setattr("bottles.backend.wine.wineboot.WineBoot", FakeWineBoot)
+    monkeypatch.setattr("bottles.backend.wine.wineprogram.WineCommand", FakeWineCommand)
     monkeypatch.setattr(
-        "bottles.backend.wine.executor.ManagerUtils.get_bottle_path",
-        lambda _cfg: str(bottle),
+        WineExecutor,
+        "_WineExecutor__set_monitors",
+        lambda _self: None,
+    )
+    executor = WineExecutor.__new__(WineExecutor)
+    executor.config = _make_config()
+    executor.exec_type = exec_type
+    executor.exec_path = "/tmp/bottles/setup." + exec_type
+    executor.args = "/quiet"
+    executor.terminal = False
+    executor.environment = {}
+    executor.pre_script = None
+    executor.post_script = None
+    executor.pre_script_args = None
+    executor.post_script_args = None
+    executor.cwd = None
+    executor.hide_console = False
+    executor.sandbox_override = None
+    executor.success_codes = success_codes
+    return executor
+
+
+def _launch(executor):
+    if executor.exec_type == "msi":
+        return executor._WineExecutor__launch_msi()
+    return executor._WineExecutor__launch_with_starter()
+
+
+@pytest.mark.parametrize("exec_type", ["exe", "msi"])
+@pytest.mark.parametrize(
+    ("returncode", "ok"),
+    [
+        (0, True),
+        # 3010 and 1641 as Wine reports them: one byte.
+        (194, True),
+        (105, True),
+        (67, False),  # 1603, fatal error during installation
+        (2, False),
+        (1, False),
+    ],
+)
+def test_installer_launch_follows_the_exit_status(
+    monkeypatch, exec_type, returncode, ok
+):
+    executor = _installer_executor(monkeypatch, exec_type, [1641, 3010], returncode)
+
+    result = _launch(executor)
+
+    assert result.ok is ok
+    assert result.data["returncode"] == returncode
+    assert result.message == ("" if ok else f"Command exited with status {returncode}.")
+
+
+@pytest.mark.parametrize("exec_type", ["exe", "msi"])
+def test_launch_without_success_codes_still_ignores_the_exit_status(
+    monkeypatch, exec_type
+):
+    executor = _installer_executor(monkeypatch, exec_type, None, 67)
+
+    assert _launch(executor).ok
+
+
+def test_installer_launch_failure_without_exit_status_is_kept(monkeypatch):
+    # e.g. the "ShellExecuteEx" detection, which fails with an exit status of 0
+    executor = _installer_executor(monkeypatch, "exe", [3010])
+    monkeypatch.setattr(
+        "bottles.backend.wine.wineprogram.WineCommand",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            run=lambda: Result(False, message="ShellExecuteEx exception"),
+        ),
     )
 
-    fonts_mtime = os.path.getmtime(fonts_dir)
-    stamp_mtime = float(stamp_file.read_text().strip() or 0)
-    assert fonts_mtime > stamp_mtime
+    result = _launch(executor)
 
-    FakeWineBoot(None).update()
-    stamp_file.write_text(str(os.path.getmtime(fonts_dir)))
+    assert not result.ok
+    assert result.message == "ShellExecuteEx exception"
 
-    assert len(wineboot_calls) == 1
-    assert float(stamp_file.read_text().strip()) == fonts_mtime
+
+def test_executable_launch_accepts_configured_exit_status(monkeypatch):
+    class Command:
+        returncode = 194
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self):
+            return Result(False, message="Command exited with status 194.")
+
+    monkeypatch.setattr("bottles.backend.wine.executor.WineCommand", Command)
+    executor = _installer_executor(monkeypatch, "exe", [3010])
+    executor.exec_path = "setup.exe"
+
+    assert executor._WineExecutor__launch_exe().ok
+    executor.success_codes = [0]
+    assert not executor._WineExecutor__launch_exe().ok
+
+
+@pytest.mark.parametrize(
+    ("returncode", "codes", "expected"),
+    [
+        (None, [3010], False),
+        (0, [0], False),
+        (194, [3010], True),
+        (3010, [3010], True),
+        (102, [1638], True),
+        (1, [3010], False),
+        (194, [], False),
+        (-62, [3010], False),
+        (-151, [1641], False),
+        (True, [1], False),
+        (450, [3010], False),
+        (194, [-62], False),
+    ],
+)
+def test_is_success_exit_code(returncode, codes, expected):
+    assert WineExecutor.is_success_exit_code(returncode, codes) is expected
+
+
+@pytest.mark.parametrize(
+    "arch,version,expected",
+    [
+        ("win32", "winxp", "winxp"),
+        ("win64", "winxp", "winxp64"),
+        ("win64", "win7", "win7"),
+    ],
+)
+def test_legacy_windows_version_uses_prefix_architecture(
+    monkeypatch, arch, version, expected
+):
+    from bottles.backend.wine import regkeys
+
+    versions = []
+    monkeypatch.setattr(
+        regkeys,
+        "WineCfg",
+        lambda config: SimpleNamespace(
+            set_windows_version=lambda value: versions.append(value) or Result(True),
+        ),
+    )
+    keys = regkeys.RegKeys.__new__(regkeys.RegKeys)
+    keys.config = SimpleNamespace(Arch=arch)
+
+    keys.lg_set_windows(version)
+
+    assert versions == [expected]
+
+
+@pytest.mark.parametrize("arch,expected", [("win32", "winxp"), ("win64", "winxp64")])
+def test_windows_registry_values_match_prefix_architecture(monkeypatch, arch, expected):
+    from bottles.backend.wine import regkeys
+
+    bundles = []
+    monkeypatch.setattr(
+        regkeys,
+        "WineBoot",
+        lambda config: SimpleNamespace(
+            restart=lambda: None,
+            update=lambda: None,
+        ),
+    )
+    keys = regkeys.RegKeys.__new__(regkeys.RegKeys)
+    keys.config = SimpleNamespace(Arch=arch)
+    keys.reg = SimpleNamespace(remove=lambda *args: None, import_bundle=bundles.append)
+
+    keys.set_windows("winxp")
+
+    values = {
+        item["value"]: item["data"]
+        for item in bundles[0][
+            "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion"
+        ]
+    }
+    assert values["CurrentVersion"] == regkeys.win_versions[expected]["CurrentVersion"]
+    assert values["CSDVersion"] == regkeys.win_versions[expected]["CSDVersion"]
+
+
+@pytest.mark.parametrize("status", [3, 4])
+def test_wineboot_preserves_the_session_display(monkeypatch, status):
+    from bottles.backend.wine.wineboot import WineBoot
+
+    captured = {}
+    monkeypatch.setenv("DISPLAY", ":17")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-fixture")
+
+    def launch(self, **kwargs):
+        env = winecommand.WineEnv()
+        env.add_bundle(kwargs["environment"], override=True)
+        captured.update(env.get()["envs"])
+        return Result(True)
+
+    monkeypatch.setattr(WineBoot, "launch", launch)
+
+    assert WineBoot(_make_config()).send_status(status).ok
+    assert captured["DISPLAY"] == ":17"
+    assert captured["WAYLAND_DISPLAY"] == "wayland-fixture"
+
+
+@pytest.mark.parametrize(
+    "output,expected",
+    [
+        ("win11\n", "win11"),
+        ("winxp64\n", "winxp64"),
+        ("00e4:err:module:use_lsteamclient lsteamclient disabled.\nwin10\n", "win10"),
+        ("win11\r\n00ec:fixme:owned diagnostic\r\n", "win11"),
+        ("win10\nwin10\n", "win10"),
+        ("win7\nwin10\n", None),
+        ("diagnostic mentions win10", None),
+        ("not a Windows version", None),
+        (None, None),
+    ],
+)
+def test_winecfg_reads_the_effective_windows_version(monkeypatch, output, expected):
+    from bottles.backend.wine.winecfg import WineCfg
+
+    calls = []
+
+    def launch(_self, **kwargs):
+        calls.append(kwargs)
+        return Result(True, output)
+
+    monkeypatch.setattr(WineCfg, "launch", launch)
+
+    result = WineCfg(_make_config()).get_windows_version()
+
+    assert result.ok is (expected is not None)
+    if expected:
+        assert result.data == expected
+    assert calls == [
+        {
+            "args": "-v",
+            "communicate": True,
+            "capture_stderr": True,
+            "action_name": "get_windows_version",
+        }
+    ]

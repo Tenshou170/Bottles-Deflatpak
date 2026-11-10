@@ -19,6 +19,7 @@ import os
 import shlex
 import signal
 import subprocess
+import time
 from typing import List, Optional
 
 from bottles.backend.globals import sandbox_available
@@ -354,20 +355,26 @@ class SandboxManager:
         return proc
 
     @classmethod
-    def terminate_prefix(cls, prefix: str, sig: int = signal.SIGKILL) -> int:
-        """
-        Kill the process group of every sandbox launcher started for the
-        given WINEPREFIX. Returns how many processes were signalled.
-        Finished launchers are pruned from the tracking list.
-        """
+    def terminate_prefix(
+        cls, prefix: str, sig: int = signal.SIGKILL, timeout: Optional[float] = None
+    ) -> int:
+        """Kill the process group of every sandbox launcher started for the
+        given WINEPREFIX. Returns how many were signalled. Finished launchers
+        are pruned."""
         killed = 0
+        deadline = time.monotonic() + timeout if timeout is not None else None
         for proc in cls._running.get(prefix, []):
             if proc.poll() is not None:
                 continue
             try:
                 os.killpg(os.getpgid(proc.pid), sig)
                 killed += 1
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+            except ProcessLookupError:
+                continue
+            except OSError:
+                if timeout is not None:
+                    raise
+            if deadline is not None:
+                proc.wait(timeout=max(0, deadline - time.monotonic()))
         cls._running[prefix] = []
         return killed

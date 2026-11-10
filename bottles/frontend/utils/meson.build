@@ -8,6 +8,7 @@ bottles_sources = [
   'common.py',
   'filters.py',
   'playtime.py',
+  'program.py',
   'sh.py',
   'sandbox_guard.py',
   'umu.py',

@@ -17,8 +17,8 @@
 
 import os
 import shutil
+import tempfile
 import traceback
-from functools import lru_cache
 from glob import glob
 from typing import Callable, Optional
 
@@ -43,8 +43,16 @@ from bottles.backend.wine.regkeys import RegKeys
 from bottles.backend.wine.regsvr32 import Regsvr32
 from bottles.backend.wine.uninstaller import Uninstaller
 from bottles.backend.wine.winedbg import WineDbg
+from bottles.backend.wine.winecfg import WineCfg
+from bottles.backend.wine.winepath import WinePath
 
 logging = Logger()
+
+
+# Non-zero exit codes that still mean the installer did its job: 1638 (another
+# version is already installed), 1641, 3010 and 3011 (done, restart needed).
+# A step can accept more through the optional `success_codes` list.
+INSTALLER_SUCCESS_CODES = (1638, 1641, 3010, 3011)
 
 
 class DependencyManager:
@@ -57,12 +65,17 @@ class DependencyManager:
         )
         self.__offline = offline
         self.__checksum_cache = {}
+        self.__manifests = {}
 
-    @lru_cache
     def get_dependency(self, name: str, plain: bool = False) -> str | dict | bool:
-        return self.__repo.get(name, plain)
+        key = (name, plain)
+        if key not in self.__manifests:
+            manifest = self.__repo.get(name, plain)
+            if manifest:
+                self.__manifests[key] = manifest
+            return manifest
+        return self.__manifests[key]
 
-    @lru_cache
     def fetch_catalog(self) -> dict:
         """
         Fetch all dependencies from the Bottles repository
@@ -303,7 +316,9 @@ class DependencyManager:
             "replace_font": _("Replacing fonts…"),
             "set_windows": _("Adjusting Windows version…"),
             "use_windows": _("Applying Windows version…"),
-            "uninstall": _("Running uninstaller…"),
+            "uninstall": _("Running uninstaller ({0})...").format(
+                file_name or _("unknown")
+            ),
         }
 
         return descriptions.get(
@@ -405,7 +420,9 @@ class DependencyManager:
                     _dep = self.__manager.supported_dependencies[_ext_dep]
                     self.__notify_progress(
                         progress_cb,
-                        _("Installing prerequisite “{0}”…").format(_ext_dep),
+                        _('Installing prerequisite "{0}"...').format(
+                            _dep.get("Description") or _ext_dep
+                        ),
                         task=task,
                     )
                     _res = self.install(
@@ -418,34 +435,53 @@ class DependencyManager:
                         TaskManager.remove(task_id)
                         return _res
 
-        for step in steps:
-            """
-            Here we execute all steps in the manifest.
-            Steps are the actions performed to install the dependency.
-            """
-            arch = step.get("for", "win64_win32")
-            if config.Arch not in arch:
-                continue
+        original_windows = None
+        windows_changed = False
+        try:
+            try:
+                for step in steps:
+                    """
+                    Here we execute all steps in the manifest.
+                    Steps are the actions performed to install the dependency.
+                    """
+                    arch = step.get("for", "win64_win32")
+                    if config.Arch not in arch:
+                        continue
 
-            description = self.__describe_step(step)
-            self.__notify_progress(progress_cb, description, task=task)
-            self.__notify_progress_fraction(progress_progress_cb, None)
+                    if step["action"] == "set_windows" and not windows_changed:
+                        version = WineCfg(config).get_windows_version()
+                        if not version.ok:
+                            TaskManager.remove(task_id)
+                            return version
+                        original_windows = version.data
+                        windows_changed = True
 
-            res = self.__perform_steps(
-                config,
-                step,
-                task=task,
-                progress_cb=progress_cb,
-                progress_progress_cb=progress_progress_cb,
-            )
-            if not res.ok:
-                TaskManager.remove(task_id)
-                return Result(
-                    status=False,
-                    message=f"One or more steps failed for {dependency[0]}.",
-                )
-            if not res.data.get("uninstaller"):
-                uninstaller = False
+                    description = self.__describe_step(step)
+                    if step["action"] != "uninstall":
+                        self.__notify_progress(progress_cb, description, task=task)
+                    self.__notify_progress_fraction(progress_progress_cb, None)
+
+                    res = self.__perform_steps(
+                        config,
+                        step,
+                        task=task,
+                        progress_cb=progress_cb,
+                        progress_progress_cb=progress_progress_cb,
+                    )
+                    if not res.ok:
+                        TaskManager.remove(task_id)
+                        message = f"One or more steps failed for {dependency[0]}."
+                        if res.message:
+                            message += f" {res.message}"
+                        return Result(status=False, message=message)
+                    if not res.data.get("uninstaller"):
+                        uninstaller = False
+            finally:
+                if windows_changed:
+                    RegKeys(config).lg_set_windows(original_windows)
+        except (OSError, ValueError) as error:
+            TaskManager.remove(task_id)
+            return Result(False, message=str(error))
 
         if dependency[0] not in config.Installed_Dependencies:
             """
@@ -462,15 +498,15 @@ class DependencyManager:
             )
             installed_new = True
 
-        if manifest.get("Uninstaller"):
+        if manifest.get("Uninstallers") or manifest.get("Uninstaller"):
             """
             If the manifest has an uninstaller, add it to the
             uninstaller list in the bottle config.
             Set it to NO_UNINSTALLER if the dependency cannot be uninstalled.
             """
-            uninstaller = manifest.get("Uninstaller")
+            uninstaller = manifest.get("Uninstallers", manifest.get("Uninstaller"))
 
-        if not isinstance(uninstaller, str) or not uninstaller:
+        if not Uninstaller.get_names(uninstaller):
             uninstaller = "NO_UNINSTALLER"
         self.__manager.update_config(config, dependency[0], uninstaller, "Uninstallers")
 
@@ -515,17 +551,22 @@ class DependencyManager:
                 return Result(status=False)
 
         if step["action"] in ["install_exe", "install_msi"]:
-            if not self.__step_install_exe_msi(
+            result = self.__step_install_exe_msi(
                 config=config,
                 step=step,
                 task=task,
                 progress_cb=progress_cb,
                 progress_progress_cb=progress_progress_cb,
-            ):
-                return Result(status=False)
+            )
+            if not result.ok:
+                return result
 
         if step["action"] == "uninstall":
-            self.__step_uninstall(config=config, file_name=step["file_name"])
+            result = self.__step_uninstall(
+                config, step["file_name"], task=task, progress_cb=progress_cb
+            )
+            if not result.ok:
+                return result
 
         if step["action"] == "cab_extract":
             uninstaller = False
@@ -572,7 +613,8 @@ class DependencyManager:
             self.__step_replace_font(config=config, step=step)
 
         if step["action"] == "set_windows":
-            self.__step_set_windows(config=config, step=step)
+            if not self.__step_set_windows(config=config, step=step):
+                return Result(False, message="Failed to change Windows version.")
 
         if step["action"] == "use_windows":
             self.__step_use_windows(config=config, step=step)
@@ -637,10 +679,11 @@ class DependencyManager:
         task: Optional[Task] = None,
         progress_cb: Optional[Callable[[str], None]] = None,
         progress_progress_cb: Optional[Callable[[Optional[float]], None]] = None,
-    ) -> bool:
+    ) -> Result:
         """
         Download and install the .exe or .msi file
-        declared in the step, in a bottle.
+        declared in the step, in a bottle. The step fails when the
+        installer exits with a status that is not a success code.
         """
         winedbg = WineDbg(config)
         progress_handler = self.__build_progress_handler(task, progress_progress_cb)
@@ -662,32 +705,90 @@ class DependencyManager:
                 file = f"{_file}/{file}"
             else:
                 file = f"{Paths.temp}/{file}"
-            executor = WineExecutor(
-                config,
-                exec_path=file,
-                args=step.get("arguments"),
-                environment=step.get("environment"),
-            )
-            executor.run()
-            winedbg.wait_for_process(file)
+            extra_codes = step.get("success_codes")
+            success_codes = list(INSTALLER_SUCCESS_CODES)
+            if isinstance(extra_codes, list):
+                success_codes += [c for c in extra_codes if type(c) is int]
+            staged = None
+            cwd = None
+            try:
+                prefix = ManagerUtils.get_bottle_path(config)
+                if not os.path.exists(os.path.join(prefix, "dosdevices", "z:")):
+                    temp_dir = os.path.join(prefix, "drive_c", "windows", "temp")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    staged = tempfile.TemporaryDirectory(
+                        prefix="bottles-installer-", dir=temp_dir
+                    )
+                    cwd = staged.name
+                    destination = os.path.join(cwd, os.path.basename(file))
+                    if step.get("url").startswith("temp/"):
+                        shutil.copytree(os.path.dirname(file), cwd, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(file, destination)
+                    file = WinePath(config).to_windows(destination, native=True)
+
+                executor = WineExecutor(
+                    config,
+                    exec_path=file,
+                    args=step.get("arguments"),
+                    environment=step.get("environment"),
+                    success_codes=success_codes,
+                    cwd=cwd,
+                )
+                result = executor.run()
+                winedbg.wait_for_process(os.path.basename(file.replace("\\", "/")))
+            except OSError as error:
+                return Result(False, message=f"Could not prepare installer: {error}")
+            finally:
+                if staged:
+                    staged.cleanup()
+
+            if not result.ok:
+                message = result.message or f"Failed to run {step.get('file_name')}."
+                logging.error(message)
+                return Result(status=False, message=message)
 
             if progress_progress_cb:
                 progress_progress_cb(None)
 
             if progress_cb:
                 progress_cb(_("Installer completed."))
-            return True
+            return Result(status=True)
 
-        return False
+        return Result(
+            status=False,
+            message=f"Failed to download {step.get('file_name')}, or checksum failed.",
+        )
 
-    @staticmethod
-    def __step_uninstall(config: BottleConfig, file_name: str) -> bool:
-        """
-        This function find an uninstaller in the bottle by the given
-        file name and execute it.
-        """
-        Uninstaller(config).from_name(file_name)
-        return True
+    def __step_uninstall(
+        self,
+        config: BottleConfig,
+        file_name: str,
+        task: Optional[Task] = None,
+        progress_cb=None,
+    ) -> Result:
+        uninstaller = Uninstaller(config)
+        installed = uninstaller.get_uuid(file_name)
+        if not installed.ok:
+            return installed
+        if not installed.has_data:
+            self.__notify_progress(
+                progress_cb,
+                _("Skipping {0}: not installed.").format(file_name),
+                task=task,
+            )
+            return Result(True)
+
+        self.__notify_progress(
+            progress_cb,
+            self.__describe_step({"action": "uninstall", "file_name": file_name}),
+            task=task,
+        )
+        for identifier in installed.data.splitlines():
+            result = uninstaller.from_uuid(identifier.strip())
+            if not result.ok:
+                return result
+        return Result(True)
 
     def __step_cab_extract(
         self,
@@ -857,10 +958,18 @@ class DependencyManager:
             if not os.path.exists(font_path):
                 os.makedirs(font_path)
 
+            temporary = None
             try:
-                shutil.copyfile(f"{path}/{font}", f"{font_path}/{font}")
-            except (FileNotFoundError, FileExistsError):
-                logging.warning(f"Font {font} already exists or is not found.")
+                with tempfile.NamedTemporaryFile(dir=font_path, delete=False) as target:
+                    temporary = target.name
+                shutil.copyfile(f"{path}/{font}", temporary)
+                os.replace(temporary, f"{font_path}/{font}")
+            except OSError as error:
+                logging.warning(f"Could not install font {font}: {error}")
+                return False
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
 
             # print(f"Copying {font} to {bottle_path}/drive_c/windows/Fonts/")
 
@@ -1024,6 +1133,7 @@ class DependencyManager:
             rk.lg_set_windows(step.get("version"))
         except ValueError as e:
             logging.warning(str(e))
+            return False
         return True
 
     @staticmethod

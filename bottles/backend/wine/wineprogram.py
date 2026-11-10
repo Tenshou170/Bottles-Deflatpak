@@ -16,6 +16,7 @@ class WineProgram:
     colors: str = "default"
     is_internal: bool = False
     internal_path: str = ""
+    returncode: Optional[int] = None
 
     def __init__(self, config: BottleConfig, silent=False):
         if not isinstance(config, BottleConfig):
@@ -51,6 +52,7 @@ class WineProgram:
         action_name: str = "launch",
         forced_dll_overrides: Optional[str] = None,
         sandbox_override: Optional[str] = None,
+        capture_stderr: bool = False,
     ):
         if environment is None:
             environment = {}
@@ -66,7 +68,7 @@ class WineProgram:
             program_args = None
 
         command = self.get_command(wineprogram_args)
-        res = WineCommand(
+        winecommand = WineCommand(
             self.config,
             command=command,
             terminal=terminal,
@@ -82,10 +84,13 @@ class WineProgram:
             cwd=cwd,
             arguments=program_args,
             sandbox_override=sandbox_override,
+            capture_stderr=capture_stderr,
         )
 
         # logging.info("Executing command:", res.command)
-        res = res.run()
+        self.returncode = None
+        res = winecommand.run()
+        self.returncode = getattr(winecommand, "returncode", None)
         return res
 
     def launch_terminal(self, args: Optional[str] = None):

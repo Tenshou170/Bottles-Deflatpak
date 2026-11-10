@@ -7,6 +7,7 @@ def test_execute_finds_supported_terminal(mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
+    popen.return_value.returncode = 0
     result = terminal.execute("wine game.exe")
 
     assert result is True
@@ -28,6 +29,7 @@ def test_execute_passes_env_to_subprocess(mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
+    popen.return_value.returncode = 0
     env = {"MY_VAR": "hello"}
 
     terminal.execute("wine game.exe", env=env)
@@ -78,6 +80,7 @@ def test_execute_formats_command_with_spaces(mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
+    popen.return_value.returncode = 0
 
     cmd = "/usr/bin/gamemoderun '/home/user/Custom Runner/files/bin/wine' start /wait game.exe"
     result = terminal.execute(cmd)
@@ -161,6 +164,8 @@ def test_terminal_wrapper_gets_host_display_child_does_not(monkeypatch, mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
+    popen.return_value.returncode = 0
+    popen.return_value.returncode = 0
     monkeypatch.setenv("DISPLAY", ":42")
 
     assert terminal.execute("wine cmd", env={"WAYLAND_DISPLAY": "wayland-0"}) is True
@@ -182,6 +187,8 @@ def test_terminal_keeps_requested_child_display(monkeypatch, mocker):
     mocker.patch.object(terminal, "check_support", return_value=True)
     popen = mocker.patch("bottles.backend.utils.terminal.subprocess.Popen")
     popen.return_value.communicate.return_value = (b"", None)
+    popen.return_value.returncode = 0
+    popen.return_value.returncode = 0
     monkeypatch.setenv("DISPLAY", ":42")
 
     assert terminal.execute("wine cmd", env={"DISPLAY": ":7"}) is True

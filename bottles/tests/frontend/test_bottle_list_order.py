@@ -20,7 +20,18 @@ from bottles.frontend.views.list import (  # noqa: E402
 
 
 def _config(path, environment="Gaming"):
-    return SimpleNamespace(Path=path, Environment=environment)
+    return SimpleNamespace(Path=path, Name=path, Environment=environment)
+
+
+def test_default_bottle_order_uses_display_names_without_case():
+    alpha = _config("old-z-folder")
+    alpha.Name = "alpha"
+    beta = _config("old-a-folder")
+    beta.Name = "Beta"
+
+    assert _ordered_bottles([beta, alpha], []) == [alpha, beta]
+    alpha.Name = "Zulu"
+    assert _ordered_bottles([alpha, beta], []) == [beta, alpha]
 
 
 def test_ordered_bottles_keeps_new_bottles_at_the_end():
@@ -152,7 +163,8 @@ def test_bottle_list_empty_state(titles, terms, expected):
     ) == expected
 
 
-def test_umu_actions_replace_empty_state():
+@pytest.mark.parametrize("show_umu", [False, True])
+def test_umu_actions_replace_empty_state(show_umu):
     visible = {}
 
     def widget(name):
@@ -167,11 +179,14 @@ def test_umu_actions_replace_empty_state():
         bottle_status=widget("empty"),
         no_bottles_found=widget("no-results"),
         umu_provider=SimpleNamespace(available=True),
+        window=SimpleNamespace(
+            settings=SimpleNamespace(get_boolean=lambda _key: show_umu)
+        ),
     )
 
     BottleView._BottleView__update_empty_state(view, "")
 
-    assert visible == {"list": True, "empty": False, "no-results": False}
+    assert visible == {"list": show_umu, "empty": not show_umu, "no-results": False}
 
 
 def test_search_updates_filters_and_empty_state():

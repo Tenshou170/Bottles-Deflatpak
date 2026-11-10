@@ -75,6 +75,8 @@ class PreferencesWindow(Adw.PreferencesDialog):
     combo_ui_language = Gtk.Template.Child()
     str_list_ui_languages = Gtk.Template.Child()
     combo_font_scale = Gtk.Template.Child()
+    combo_library_order = Gtk.Template.Child()
+    switch_show_umu = Gtk.Template.Child()
     combo_audio_driver = Gtk.Template.Child()
     spin_eagle_limit = Gtk.Template.Child()
     list_runners = Gtk.Template.Child()
@@ -275,6 +277,15 @@ class PreferencesWindow(Adw.PreferencesDialog):
         )
 
         self.__sync_font_scale_selection()
+        self.settings.bind(
+            "show-umu", self.switch_show_umu, "active", Gio.SettingsBindFlags.DEFAULT
+        )
+        self.settings.bind(
+            "library-sort-order",
+            self.combo_library_order,
+            "selected",
+            Gio.SettingsBindFlags.DEFAULT,
+        )
         self.combo_font_scale.connect("notify::selected", self.__on_font_scale_selected)
         self.settings.connect(
             "changed::font-scale", self.__on_font_scale_setting_changed
@@ -364,6 +375,11 @@ class PreferencesWindow(Adw.PreferencesDialog):
             self.row_eagle_security.set_subtitle(
                 _("Disabled. Executables will run without being checked for threats.")
             )
+
+    def refresh_component_usage(self):
+        for entry in self.__registry:
+            if isinstance(entry, ComponentEntry):
+                entry.refresh_usage()
 
     def ui_update(self):
         # Show locally installed runners/DLLs right away so the pages never get
@@ -757,16 +773,18 @@ class PreferencesWindow(Adw.PreferencesDialog):
         RunAsync(self.manager.apply_audio_driver, driver=driver)
 
     def __display_unstable_candidate(self, component=["", {"Channel": "unstable"}]):
-        return self.window.settings.get_boolean("release-candidate") or component[1][
-            "Channel"
-        ] not in ["rc", "unstable"]
+        return (
+            component[1].get("Installed", False)
+            or self.window.settings.get_boolean("release-candidate")
+            or component[1]["Channel"] not in ["rc", "unstable"]
+        )
 
     def __populate_component_list(
         self, component_type, supported_components, list_component
     ):
         offline_components = self.manager.get_offline_components(component_type)
         supported_component_items = list(supported_components.items())
-        if self.__display_unstable_candidate():
+        if offline_components:
             i, j = 0, 0
             while i <= len(supported_component_items):
                 while j < len(offline_components) and (
@@ -856,7 +874,7 @@ class PreferencesWindow(Adw.PreferencesDialog):
             identifiable_runner["runner_type"] = runner_type
 
         offline_runners_list = self.manager.get_offline_components(runner_type)
-        if self.__display_unstable_candidate():
+        if offline_runners_list:
             for offline_runner_name in offline_runners_list:
                 offline_runner = [
                     offline_runner_name,

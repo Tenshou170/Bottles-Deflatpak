@@ -21,6 +21,56 @@ def _make_view(config):
     return SimpleNamespace(config=config, switch_hdr=Mock())
 
 
+@pytest.mark.parametrize("success", [False, True])
+def test_bottle_notes_are_kept_when_saving_fails(success):
+    from gi.repository import Gtk
+    from bottles.backend.models.result import Result
+    from bottles.frontend.views.bottle_preferences import PreferencesView
+
+    config = BottleConfig(Name="Test")
+    text = Gtk.TextView()
+    notes = "Installation notes\nDo not discard this text."
+    text.get_buffer().set_text(notes)
+    button = Gtk.Button()
+    manager = SimpleNamespace(
+        update_config=Mock(return_value=Result(success, {"config": config}))
+    )
+    view = SimpleNamespace(
+        config=config,
+        text_notes=text,
+        btn_save_notes=button,
+        manager=manager,
+        window=SimpleNamespace(show_toast=Mock()),
+    )
+
+    PreferencesView._PreferencesView__save_notes(view, button)
+
+    manager.update_config.assert_called_once_with(config, key="Notes", value=notes)
+    assert button.get_sensitive() is not success
+    buffer = text.get_buffer()
+    assert (
+        buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True) == notes
+    )
+    assert view.window.show_toast.called is not success
+
+
+@pytest.mark.parametrize("nvidia", (True, False))
+@pytest.mark.parametrize("enabled", (True, False))
+def test_nvapi_remains_manageable_after_gpu_change(monkeypatch, nvidia, enabled):
+    from bottles.frontend.views import bottle_preferences
+    from bottles.frontend.views.bottle_preferences import PreferencesView
+
+    config = BottleConfig()
+    config.Parameters.dxvk_nvapi = enabled
+    view = SimpleNamespace(config=config, row_nvapi=Mock(), combo_nvapi=Mock())
+    monkeypatch.setattr(bottle_preferences.GPUUtils, "is_gpu", lambda *_args: nvidia)
+
+    PreferencesView._PreferencesView__update_nvapi_visibility(view)
+
+    view.row_nvapi.set_visible.assert_called_once_with(nvidia or enabled)
+    view.combo_nvapi.set_visible.assert_called_once_with(nvidia or enabled)
+
+
 def test_active_hdr_remains_available_to_disable_on_x11(monkeypatch):
     from bottles.frontend.views import bottle_preferences
     from bottles.frontend.views.bottle_preferences import PreferencesView
@@ -99,6 +149,65 @@ def test_unchanged_sync_does_not_update_bottle(monkeypatch):
     view.manager.update_config.assert_not_called()
     view.combo_sync.set_sensitive.assert_not_called()
     view.queue.add_task.assert_not_called()
+
+
+@pytest.mark.parametrize("error", (None, ValueError("winecfg failed")))
+def test_windows_version_is_saved_only_after_winecfg_succeeds(monkeypatch, error):
+    from gi.repository import Adw, GLib, Gtk
+
+    from bottles.frontend.views import bottle_preferences
+    from bottles.frontend.views.bottle_preferences import PreferencesView
+
+    Adw.init()
+    config = BottleConfig(Windows="win10")
+    combo = Adw.ComboRow(model=Gtk.StringList.new(["Windows 10", "Windows 11"]))
+    combo.set_selected(0)
+    view = SimpleNamespace(
+        config=config,
+        combo_windows=combo,
+        windows_versions={"win10": "Windows 10", "win11": "Windows 11"},
+        manager=Mock(),
+        queue=Mock(),
+        spinner_windows=Mock(),
+    )
+    view._PreferencesView__set_windows = lambda *_args: (
+        PreferencesView._PreferencesView__set_windows(view)
+    )
+    combo.connect("notify::selected", view._PreferencesView__set_windows)
+    run_async = Mock()
+    monkeypatch.setattr(bottle_preferences, "RunAsync", run_async)
+    monkeypatch.setattr(bottle_preferences, "RegKeys", Mock())
+
+    def persist(**kwargs):
+        config.Windows = kwargs["value"]
+        return SimpleNamespace(data={"config": config})
+
+    view.manager.update_config.side_effect = persist
+    combo.set_selected(1)
+
+    assert config.Windows == "win10"
+    view.manager.update_config.assert_not_called()
+    assert not combo.get_sensitive()
+    callback = run_async.call_args.kwargs["callback"]
+    callback(None, error)
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+
+    if error:
+        assert config.Windows == "win10"
+        assert combo.get_selected() == 0
+        view.manager.update_config.assert_not_called()
+    else:
+        assert config.Windows == "win11"
+        assert combo.get_selected() == 1
+        view.manager.update_config.assert_called_once_with(
+            config=config, key="Windows", value="win11"
+        )
+    assert run_async.call_count == 1
+    assert combo.get_sensitive()
+    view.queue.end_task.assert_called_once_with()
+    view.spinner_windows.stop.assert_called_once_with()
 
 
 @pytest.mark.parametrize(

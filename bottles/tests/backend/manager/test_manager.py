@@ -313,6 +313,85 @@ def test_check_bottles_updates_versioned_system_runner(
     apply_rules.assert_not_called()
 
 
+@pytest.mark.parametrize("external_drive", (True, False))
+def test_loaded_prefix_keeps_user_files_after_account_change(
+    monkeypatch, tmp_path, external_drive
+):
+    bottles = tmp_path / "bottles"
+    prefix = bottles / "Portable"
+    prefix.mkdir(parents=True)
+    drive = tmp_path / "external-drive" if external_drive else prefix / "drive_c"
+    profile = drive / "users/source-user"
+    profile.mkdir(parents=True)
+    if external_drive:
+        (prefix / "drive_c").symlink_to(drive)
+    (profile / "document.txt").write_text("existing document")
+    BottleConfig(Name="Portable", Path="Portable", Runner="runner").dump(
+        str(prefix / "bottle.yml")
+    )
+    manager = object.__new__(Manager)
+    manager.runners_available = ["runner"]
+    manager.settings = GSettingsStub()
+    manager.is_cli = True
+    monkeypatch.setattr(manager_module.Paths, "bottles", str(bottles))
+    monkeypatch.setenv("USER", "destination-user")
+
+    manager.check_bottles(silent=True)
+
+    users = prefix / "drive_c/users"
+    if external_drive:
+        assert not (users / "destination-user").exists()
+        assert not (users / "steamuser").exists()
+    else:
+        assert (users / "destination-user").is_symlink()
+        assert (
+            users / "destination-user/document.txt"
+        ).read_text() == "existing document"
+        assert (users / "steamuser/document.txt").read_text() == "existing document"
+    assert profile.is_dir() and not profile.is_symlink()
+
+
+def test_full_backup_import_preserves_files_for_another_account(monkeypatch, tmp_path):
+    from bottles.backend.managers import backup
+    from bottles.backend.managers.backup import BackupManager
+
+    source = tmp_path / "source"
+    prefix = source / "Portable"
+    profile = prefix / "drive_c/users/source-user"
+    profile.mkdir(parents=True)
+    (profile / "document.txt").write_text("existing document")
+    config = BottleConfig(
+        Name="Portable",
+        Path="Portable",
+        Runner="runner",
+        Notes="Keep these installation notes.",
+    )
+    config.dump(str(prefix / "bottle.yml"))
+    archive = tmp_path / "portable.tar.gz"
+    monkeypatch.setattr(manager_module.Paths, "bottles", str(source))
+    assert BackupManager.export_backup(config, "full", str(archive)).ok
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    manager = object.__new__(Manager)
+    manager.runners_available = ["runner"]
+    manager.settings = GSettingsStub()
+    manager.is_cli = True
+    monkeypatch.setattr(backup, "Manager", lambda: manager)
+    monkeypatch.setattr(manager_module.Paths, "bottles", str(destination))
+    monkeypatch.setenv("USER", "destination-user")
+
+    assert BackupManager.import_backup("full", str(archive)).ok
+
+    users = destination / "Portable/drive_c/users"
+    assert (users / "destination-user/document.txt").read_text() == "existing document"
+    assert (users / "source-user/document.txt").read_text() == "existing document"
+    assert not (profile.parent / "destination-user").exists()
+    restored = BottleConfig.load(str(destination / "Portable/bottle.yml"))
+    assert restored.ok
+    assert restored.data.Notes == config.Notes
+
+
 def test_get_programs_preserves_per_program_runtime_options(monkeypatch):
     class Settings:
         @staticmethod
@@ -504,6 +583,36 @@ def test_create_bottle_checks_every_essential_component_before_retry():
 
     assert not result.ok
     assert calls == ["runner", "dxvk", "vkd3d"]
+
+
+def test_create_bottle_rejects_win32_for_wow64_only_runner(tmp_path, monkeypatch):
+    runner = tmp_path / "runner"
+    ntdll = runner / "lib/wine/x86_64-unix/ntdll.so"
+    ntdll.parent.mkdir(parents=True)
+    ntdll.touch()
+    monkeypatch.setattr(ManagerUtils, "get_runner_path", lambda *_args: str(runner))
+    manager = object.__new__(Manager)
+    manager.runners_available = ["runner"]
+    manager.dxvk_available = ["dxvk"]
+    manager.vkd3d_available = ["vkd3d"]
+    manager.nvapi_available = ["nvapi"]
+    manager.latencyflex_available = ["latencyflex"]
+    manager.d7vk_available = []
+    messages = []
+
+    result = manager.create_bottle(
+        name="Test",
+        environment="application",
+        runner="runner",
+        arch="win32",
+        path=str(tmp_path),
+        fn_logger=messages.append,
+    )
+
+    assert not result.ok
+    assert "32-bit prefix" in result.message
+    assert result.message in messages
+    assert not (tmp_path / "Test").exists()
 
 
 class ComponentUpdateSettings:
@@ -720,3 +829,95 @@ def test_update_config_serializes_concurrent_writers(tmp_path, monkeypatch):
                 f"value-{index}-{n}"
             )
     assert config.Update_Date is not None
+
+
+@pytest.mark.parametrize("target_available", [True, False])
+def test_custom_prefix_without_placeholder_uses_its_current_config(
+    monkeypatch, tmp_path, target_available
+):
+    bottles = tmp_path / "bottles"
+    local = bottles / "Imported"
+    local.mkdir(parents=True)
+    target = tmp_path / "external" / "Imported"
+    stale = BottleConfig(
+        Name="Imported", Path=str(target), Custom_Path=True, Runner="old-runner"
+    )
+    stale.dump(str(local / "bottle.yml"))
+    local_before = (local / "bottle.yml").read_bytes()
+    if target_available:
+        target.mkdir(parents=True)
+        current = stale.copy()
+        current.Runner = "new-runner"
+        current.Environment_Variables = {"KEEP_SETTING": "yes"}
+        current.dump(str(target / "bottle.yml"))
+        target_before = (target / "bottle.yml").read_bytes()
+    manager = object.__new__(Manager)
+    manager.runners_available = ["new-runner"]
+    manager.settings = GSettingsStub()
+    manager.is_cli = True
+    monkeypatch.setattr(manager_module.Paths, "bottles", str(bottles))
+
+    manager.check_bottles(silent=True)
+
+    assert (local / "bottle.yml").read_bytes() == local_before
+    if target_available:
+        config = manager.local_bottles["Imported"]
+        assert config.Runner == "new-runner"
+        assert config.Environment_Variables == {"KEEP_SETTING": "yes"}
+        assert (target / "bottle.yml").read_bytes() == target_before
+        manager.check_bottles(silent=True)
+        assert manager.local_bottles["Imported"].Runner == "new-runner"
+    else:
+        assert manager.local_bottles == {}
+        assert not target.exists()
+
+
+def test_prefix_creation_reports_wineboot_failure_before_waiting(monkeypatch, tmp_path):
+    from bottles.backend.models.result import Result
+
+    bottles = tmp_path / "bottles"
+    bottles.mkdir()
+    manager = object.__new__(Manager)
+    for attribute in (
+        "runners_available",
+        "dxvk_available",
+        "vkd3d_available",
+        "nvapi_available",
+        "latencyflex_available",
+    ):
+        setattr(manager, attribute, ["fixture"])
+    manager.d7vk_available = []
+    monkeypatch.setattr(manager_module.Paths, "bottles", str(bottles))
+    monkeypatch.setattr(manager_module.FileUtils, "chattr_f", lambda path: None)
+    monkeypatch.setattr(
+        manager_module.WineUtils,
+        "ensure_user_profile_alias",
+        lambda path, user=None: True,
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "WineBoot",
+        lambda config: SimpleNamespace(
+            init=lambda: Result(False, message="Command exited with status 23."),
+        ),
+    )
+
+    def unexpected_wait(*args, **kwargs):
+        raise AssertionError("Waited for prefix files after wineboot failed")
+
+    monkeypatch.setattr(manager_module.FileUtils, "wait_for_files", unexpected_wait)
+    monkeypatch.setattr(manager_module.logging, "error", lambda *args, **kwargs: None)
+    messages = []
+
+    result = manager.create_bottle(
+        name="Test",
+        environment="custom",
+        runner="fixture",
+        arch="win64",
+        configuration=BottleConfig(),
+        fn_logger=messages.append,
+    )
+
+    assert not result.ok
+    assert "status 23" in result.message
+    assert result.message in messages

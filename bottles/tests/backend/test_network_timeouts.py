@@ -30,6 +30,7 @@ class FakeCurl:
     WRITEDATA = pycurl.WRITEDATA
     RESPONSE_CODE = pycurl.RESPONSE_CODE
     EFFECTIVE_URL = pycurl.EFFECTIVE_URL
+    FAILONERROR = pycurl.FAILONERROR
 
     def __init__(self, payload=b"entry: value\n", response_code=200):
         self.options = {}
@@ -169,7 +170,10 @@ def test_stream_download_has_timeouts(monkeypatch, tmp_path):
         request["url"] = url
         request.update(kwargs)
         return SimpleNamespace(
-            headers={}, content=b"runner", raise_for_status=lambda: None
+            headers={},
+            iter_content=lambda _size: iter([b"runner"]),
+            raise_for_status=lambda: None,
+            close=lambda: None,
         )
 
     monkeypatch.setattr(downloader_module.requests, "get", get)
@@ -180,7 +184,7 @@ def test_stream_download_has_timeouts(monkeypatch, tmp_path):
     ).download()
 
     assert result.ok is True
-    assert request["timeout"] == (10, 30)
+    assert request["timeout"] == (10, 60)
 
 
 def test_stream_timeout_removes_partial_download(monkeypatch, tmp_path):
@@ -195,6 +199,10 @@ def test_stream_timeout_removes_partial_download(monkeypatch, tmp_path):
         def iter_content(_size):
             yield b"half"
             raise downloader_module.requests.exceptions.ReadTimeout
+
+        @staticmethod
+        def close():
+            pass
 
     monkeypatch.setattr(
         downloader_module.requests, "get", lambda *_args, **_kwargs: Response()
@@ -247,6 +255,7 @@ def test_component_install_stops_after_extraction_failure(monkeypatch):
 
 
 class IndexCurl:
+    FAILONERROR = pycurl.FAILONERROR
     URL = pycurl.URL
     FOLLOWLOCATION = pycurl.FOLLOWLOCATION
     CONNECTTIMEOUT = pycurl.CONNECTTIMEOUT

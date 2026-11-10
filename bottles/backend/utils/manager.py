@@ -312,6 +312,42 @@ class ManagerUtils:
         return os.path.dirname(executable_path)
 
     @staticmethod
+    def program_exists(config: BottleConfig, path: str) -> Optional[bool]:
+        if not isinstance(path, str) or not path or "%" in path:
+            return None
+        if re.match(r"^[a-zA-Z]:[\\/]", path):
+            from bottles.backend.wine.winepath import WinePath
+
+            path = WinePath(config).to_unix(path, native=True)
+            if os.path.isfile(path):
+                return True
+            # Wine paths are case insensitive, including on case-sensitive drives.
+            current = os.sep
+            for part in os.path.normpath(path).split(os.sep)[1:]:
+                candidate = os.path.join(current, part)
+                if not os.path.exists(candidate):
+                    try:
+                        with os.scandir(current) as entries:
+                            match = next(
+                                (
+                                    entry.name
+                                    for entry in entries
+                                    if entry.name.casefold() == part.casefold()
+                                ),
+                                None,
+                            )
+                    except OSError:
+                        return False
+                    if match is None:
+                        return False
+                    candidate = os.path.join(current, match)
+                current = candidate
+            return os.path.isfile(current)
+        if os.path.isabs(path):
+            return os.path.isfile(path)
+        return None
+
+    @staticmethod
     def extract_icon(config: BottleConfig, program_name: str, program_path: str) -> str:
         from bottles.backend.wine.winepath import WinePath
 
@@ -417,7 +453,7 @@ class ManagerUtils:
 
         try:
             portal_exec_cmd = ManagerUtils.get_desktop_entry_exec(
-                config, program, for_host=True
+                config, program, for_host=False
             )
             portal_content = ManagerUtils.build_desktop_entry(
                 config, program, portal_exec_cmd
@@ -859,7 +895,10 @@ class ManagerUtils:
     def remove_desktop_entry(config, program: dict) -> bool:
         desktop_entry_id = ManagerUtils.get_desktop_entry_id(config, program)
         portal_state = ManagerUtils.get_portal_desktop_entry_state(config, program)
-        if portal_state is None:
+        if not portal_state:
+            # Either the portal has no entry for this program (False) or it
+            # could not be queried (None): fall back to a manual shortcut, and
+            # report that nothing was removed when there is none.
             _, entry_paths = ManagerUtils.get_manual_desktop_entry_paths(
                 config, program
             )

@@ -814,14 +814,21 @@ class Manager(metaclass=Singleton):
         logging.info(f"Removing {dependency} dependency from {config.Name}")
         uninstallers = config.Uninstallers
 
-        uninstaller = uninstallers.get(dependency)
-        if not isinstance(uninstaller, str) or uninstaller in ["", "NO_UNINSTALLER"]:
+        names = Uninstaller.get_names(uninstallers.get(dependency))
+        if not names:
             return Result(
                 status=False,
                 message=f"No uninstaller is available for {dependency}.",
             )
 
-        Uninstaller(config).from_name(uninstaller)
+        uninstaller = Uninstaller(config)
+        for name in names:
+            result = uninstaller.from_name(name)
+            if not result.ok:
+                return Result(
+                    False,
+                    message=result.message or f"Failed to uninstall {name}.",
+                )
 
         # remove dependency from bottle configuration
         if dependency in config.Installed_Dependencies:
@@ -1459,6 +1466,22 @@ class Manager(metaclass=Singleton):
 
             config_load = BottleConfig.load(_config)
 
+            if (
+                config_load.status
+                and not _placeholder_target
+                and config_load.data.Custom_Path
+                and os.path.isabs(config_load.data.Path)
+            ):
+                target = config_load.data.Path
+                target_config = os.path.join(target, "bottle.yml")
+                if os.path.realpath(target_config) != os.path.realpath(_config):
+                    _placeholder_target = target
+                    _config = target_config
+                    config_load = BottleConfig.load(_config)
+                    if config_load.status:
+                        config_load.data.Path = target
+                        config_load.data.Custom_Path = True
+
             if not config_load.status:
                 if _placeholder_target:
                     # the bottle lives on a custom path that is not reachable now
@@ -1547,6 +1570,14 @@ class Manager(metaclass=Singleton):
 
             try:
                 real_path = ManagerUtils.get_bottle_path(config)
+                users_path = os.path.join(real_path, "drive_c", "users")
+                if os.path.isdir(users_path) and not os.path.islink(
+                    os.path.join(real_path, "drive_c")
+                ):
+                    if not WineUtils.ensure_user_profile_alias(real_path):
+                        logging.warning(
+                            f"Could not prepare user profile aliases for bottle {_name}."
+                        )
                 for p in [
                     os.path.join(real_path, "cache", "dxvk_shader"),
                     os.path.join(real_path, "cache", "gl_shader"),
@@ -1687,7 +1718,9 @@ class Manager(metaclass=Singleton):
                 else:
                     config[key] = value
 
-            config.dump(os.path.join(bottle_path, "bottle.yml"))
+            result = config.dump(os.path.join(bottle_path, "bottle.yml"))
+            if not result.status:
+                return Result(False, data={"config": config}, message=result.message)
 
             config.Update_Date = str(datetime.now())
 
@@ -1893,6 +1926,16 @@ class Manager(metaclass=Singleton):
             # if no runner is specified, use the first one from available
             runner = self.get_latest_runner()
         runner_name = runner
+
+        if arch == "win32" and not WineUtils.supports_win32_prefix(
+            ManagerUtils.get_runner_path(runner)
+        ):
+            message = _(
+                "This runner cannot create a 32-bit prefix. Use a 64-bit bottle "
+                "to run 32-bit applications, or select a runner with 32-bit Unix support."
+            )
+            log_update(message)
+            return Result(False, message=message)
 
         if not dxvk:
             # if no dxvk is specified, use the first one from available
@@ -2104,7 +2147,14 @@ class Manager(metaclass=Singleton):
 
         # execute wineboot on the bottle path
         log_update(_("The Wine config is being updated…"))
-        wineboot.init()
+        initialized = wineboot.init()
+        if not initialized.ok:
+            message = _("Failed to initialize the Wine prefix.")
+            if initialized.message:
+                message = f"{message} {initialized.message}"
+            logging.error(message, jn=True)
+            log_update(message)
+            return Result(False, data={"config": config}, message=message)
         if not FileUtils.wait_for_files(prefix_files, timeout=5):
             logging.error("Wine prefix initialization failed.", jn=True)
             message = _("Failed to initialize the Wine prefix.")
@@ -2208,6 +2258,10 @@ class Manager(metaclass=Singleton):
             rk.toggle_wayland_driver(parameters.wayland)
             rk.set_renderer(parameters.renderer)
             rk.set_dpi(parameters.custom_dpi)
+            if parameters.dpi_scaling != "default":
+                result = rk.set_dpi_scaling(parameters.dpi_scaling)
+                if not result.ok:
+                    raise ValueError(result.message)
             rk.set_grab_fullscreen(parameters.fullscreen_capture)
             rk.set_take_focus(parameters.take_focus)
             rk.set_decorated(parameters.decorated)
@@ -2247,6 +2301,9 @@ class Manager(metaclass=Singleton):
                 return Result(False)
 
             wineboot.kill()
+
+        if self.settings.get_boolean("disable-home-drive"):
+            Drives(config).remove_drive("Z")
 
         if env:
             while wineserver.is_alive():
@@ -2331,7 +2388,9 @@ class Manager(metaclass=Singleton):
                             _("Failed to install dependency: %s")
                             % _dep.get("Description", "n/a")
                         )
-                        return Result(False)
+                        if res.message:
+                            log_update(res.message)
+                        return res
                     template_updated = True
 
         if d7vk_requested:

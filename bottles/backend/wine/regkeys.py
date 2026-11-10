@@ -1,12 +1,18 @@
+import json
+import os
+import shlex
+import tempfile
 from typing import Optional
 
 from bottles.backend.logger import Logger
 from bottles.backend.models.config import BottleConfig
+from bottles.backend.models.result import Result
 from bottles.backend.models.enum import Arch
 from bottles.backend.wine.catalogs import win_versions
 from bottles.backend.wine.reg import Reg
 from bottles.backend.wine.wineboot import WineBoot
 from bottles.backend.wine.winecfg import WineCfg
+from bottles.backend.utils.manager import ManagerUtils
 
 logging = Logger()
 
@@ -21,6 +27,9 @@ class RegKeys:
         Legacy method to change Windows version in a bottle using
         the Wine Configuration tool.
         """
+        if version == "winxp" and self.config.Arch == Arch.WIN64:
+            version = "winxp64"
+
         winecfg = WineCfg(self.config)
         res = winecfg.set_windows_version(version)
         if not res.ok:
@@ -45,12 +54,12 @@ class RegKeys:
             If the given version is invalid.
         """
 
+        if version == "winxp" and self.config.Arch == Arch.WIN64:
+            version = "winxp64"
+
         win_version = win_versions.get(version)
         if win_version is None:
             raise ValueError("Given version is not supported.")
-
-        if version == "winxp" and self.config.Arch == Arch.WIN64:
-            version = "winxp64"
 
         wineboot = WineBoot(self.config)
         del_keys = {
@@ -325,6 +334,102 @@ class RegKeys:
             data=str(value),
             value_type="REG_DWORD",
         )
+
+    def set_dpi_scaling(self, mode: str) -> Result:
+        if mode is None:
+            return Result(False, message="Unknown DPI scaling mode.")
+        return self._dpi_scaling(mode)
+
+    def get_dpi_scaling(self) -> Result:
+        return self._dpi_scaling()
+
+    def _dpi_scaling(self, mode: Optional[str] = None) -> Result:
+        flags = {"default": "", "application": "HIGHDPIAWARE", "system": "DPIUNAWARE"}
+        if mode is not None and mode not in flags:
+            return Result(False, message="Unknown DPI scaling mode.")
+        key = r"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"
+        directory = os.path.join(ManagerUtils.get_bottle_path(self.config), "drive_c")
+        path = None
+        try:
+            descriptor, path = tempfile.mkstemp(
+                prefix=".bottles-dpi-", suffix=".reg", dir=directory
+            )
+            os.close(descriptor)
+            windows_path = shlex.quote("C:\\" + os.path.basename(path))
+            with open(path, "w", encoding="utf-16") as stream:
+                stream.write(f"Windows Registry Editor Version 5.00\n\n[{key}]\n")
+            created = self.reg.launch(f"import {windows_path}", communicate=True)
+            if not created.ok:
+                return created
+            exported = self.reg.launch(
+                f"export {shlex.quote(key)} {windows_path} /y", communicate=True
+            )
+            if not exported.ok:
+                return exported
+            current = ""
+            in_key = False
+            found_key = False
+            with open(path, encoding="utf-16") as stream:
+                if stream.readline().strip() != "Windows Registry Editor Version 5.00":
+                    return Result(
+                        False, message="The registry export could not be read."
+                    )
+                for line in stream:
+                    line = line.strip()
+                    if line.startswith("["):
+                        in_key = line.casefold() == f"[{key}]".casefold()
+                        found_key = found_key or in_key
+                    elif in_key and line.startswith("@="):
+                        current = json.loads(line[2:])
+                        if not isinstance(current, str):
+                            return Result(
+                                False,
+                                message="The DPI compatibility value is not a string.",
+                            )
+            if not found_key:
+                return Result(
+                    False, message="The compatibility registry key was not exported."
+                )
+            if mode is None:
+                layers = {item.upper() for item in current.split()}
+                selected = (
+                    "system"
+                    if "DPIUNAWARE" in layers
+                    else "application"
+                    if "HIGHDPIAWARE" in layers
+                    else "default"
+                )
+                return Result(True, data=selected)
+            layers = [
+                item
+                for item in current.split()
+                if item.upper()
+                not in (
+                    "HIGHDPIAWARE",
+                    "DPIUNAWARE",
+                    "GDIDPISCALING",
+                )
+            ]
+            if flags[mode]:
+                if not layers:
+                    layers.append("~")
+                layers.append(flags[mode])
+            if layers == ["~"]:
+                layers = []
+            value = json.dumps(" ".join(layers), ensure_ascii=False) if layers else "-"
+            with open(path, "w", encoding="utf-16") as stream:
+                stream.write(
+                    f"Windows Registry Editor Version 5.00\n\n[{key}]\n@={value}\n"
+                )
+            return self.reg.launch(f"import {windows_path}", communicate=True)
+        except (OSError, UnicodeError, ValueError) as error:
+            return Result(False, message=str(error))
+        finally:
+            if path is not None:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
 
     def set_grab_fullscreen(self, state: bool):
         """

@@ -232,8 +232,14 @@ class TerminalUtils:
                 shell=False,
                 env=env,
                 cwd=cwd,
+                stdout=subprocess.PIPE,
             )
             proc.communicate()
+            if proc.returncode:
+                logging.warning(
+                    f"Terminal command exited with status {proc.returncode}."
+                )
+                return False
         except Exception as e:
             logging.warning(f"Failed to launch terminal command: {e}")
             return False

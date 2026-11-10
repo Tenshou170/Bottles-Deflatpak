@@ -8,7 +8,6 @@ from bottles.backend.globals import Paths
 from bottles.backend.managers import component as component_module
 from bottles.backend.managers import dependency as dependency_module
 from bottles.backend.managers.component import ComponentManager
-from bottles.backend.utils import connection as connection_module
 from bottles.backend.managers.dependency import DependencyManager
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.repos.component import ComponentRepo
@@ -203,6 +202,7 @@ def test_d7vk_uninstall_does_not_reinstall_component(tmp_path, monkeypatch):
     manager = FakeManager()
     manager.local_bottles = {}
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = manager
     monkeypatch.setattr(
         component_module.ManagerUtils,
@@ -225,6 +225,7 @@ def test_disabled_d7vk_does_not_block_component_removal():
         pass
 
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     manager = FakeManager()
     manager.local_bottles = {"test": config}
     component_manager._ComponentManager__manager = manager
@@ -319,6 +320,7 @@ def test_dependency_catalog_handles_invalid_nested_entry():
     repo.offline = True
     repo.catalog = catalog
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__repo = repo
     dependency_manager._DependencyManager__offline = True
     dependency_manager._DependencyManager__checksum_cache = {}
@@ -354,6 +356,7 @@ def test_component_cache_requires_manifest_and_payload(tmp_path, monkeypatch):
     }
     repo = SimpleNamespace(get=lambda name, plain=False: manifests.get(name, False))
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__repo = repo
 
     assert component_manager.is_component_cached("cached") is True
@@ -375,6 +378,7 @@ def test_component_cache_rejects_corrupt_payload(tmp_path, monkeypatch):
         ]
     }
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__repo = SimpleNamespace(
         get=lambda name, plain=False: manifest
     )
@@ -413,6 +417,7 @@ def test_component_catalog_is_available_without_connection():
         winebridge_available=[],
     )
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = manager
     component_manager._ComponentManager__repo = SimpleNamespace(catalog=catalog)
 
@@ -459,6 +464,7 @@ def test_component_catalog_filters_host_platform_and_architecture(monkeypatch):
         winebridge_available=[],
     )
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = manager
     component_manager._ComponentManager__repo = SimpleNamespace(catalog=catalog)
     monkeypatch.setattr(component_module, "get_host_architecture", lambda: "aarch64")
@@ -508,6 +514,7 @@ def test_component_catalog_marks_checksum_valid_cache(tmp_path, monkeypatch):
         winebridge_available=[],
     )
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = manager
     component_manager._ComponentManager__repo = SimpleNamespace(
         catalog=catalog,
@@ -552,6 +559,7 @@ def test_cached_component_installs_without_network(tmp_path, monkeypatch):
         organize_components=lambda: None,
     )
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = manager
     component_manager._ComponentManager__repo = SimpleNamespace(
         get=lambda name, plain=False: manifest
@@ -568,11 +576,14 @@ def test_cached_component_installs_without_network(tmp_path, monkeypatch):
 def test_offline_download_never_uses_network(tmp_path, monkeypatch):
     monkeypatch.setattr(Paths, "temp", str(tmp_path))
     monkeypatch.setattr(
-        connection_module.pycurl,
-        "Curl",
-        lambda: (_ for _ in ()).throw(AssertionError("network access attempted")),
+        component_module,
+        "Downloader",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("network access attempted")
+        ),
     )
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = SimpleNamespace(
         check_app_dirs=lambda: None
     )
@@ -622,6 +633,7 @@ def test_dependency_cache_checks_relevant_architecture(tmp_path, monkeypatch):
     }
     repo = SimpleNamespace(get=lambda name, plain=False: manifests.get(name, False))
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__repo = repo
 
     assert dependency_manager.is_dependency_cached("example", "win64") is True
@@ -655,6 +667,7 @@ def test_dependency_cache_requires_cached_prerequisites(tmp_path, monkeypatch):
     }
     repo = SimpleNamespace(get=lambda name, plain=False: manifests.get(name, False))
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__repo = repo
 
     assert dependency_manager.is_dependency_cached("main", "win64") is False
@@ -672,6 +685,7 @@ def test_dependency_cycle_is_rejected_without_recursion(monkeypatch):
         supported_dependencies={name: {} for name in manifests},
     )
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__manager = manager
     dependency_manager._DependencyManager__repo = repo
     dependency_manager._DependencyManager__checksum_cache = {}
@@ -695,6 +709,7 @@ def test_dependency_cycle_is_rejected_without_recursion(monkeypatch):
 def test_dependency_rejects_incomplete_manifest():
     manifest = {"Dependencies": [], "Steps": None}
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__manager = SimpleNamespace()
     dependency_manager._DependencyManager__repo = SimpleNamespace(
         get=lambda name, plain=False: manifest
@@ -715,6 +730,7 @@ def test_dependency_rejects_incomplete_manifest():
 def test_dependency_catalog_is_available_without_connection():
     catalog = {"example": {"Category": "Misc", "Description": "Example"}}
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__repo = SimpleNamespace(catalog=catalog)
 
     assert dependency_manager.fetch_catalog() == catalog
@@ -744,6 +760,7 @@ def test_dependency_catalog_marks_architecture_cache(tmp_path, monkeypatch):
         ]
     }
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__repo = SimpleNamespace(
         catalog=catalog,
         get=lambda name, plain=False: manifest,
@@ -780,6 +797,7 @@ def test_cached_dependency_installs_without_network(tmp_path, monkeypatch):
         ]
     }
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = SimpleNamespace(
         check_app_dirs=lambda: None
     )
@@ -789,6 +807,7 @@ def test_cached_dependency_installs_without_network(tmp_path, monkeypatch):
         update_config=lambda *_args, **_kwargs: None,
     )
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__manager = manager
     dependency_manager._DependencyManager__repo = SimpleNamespace(
         get=lambda name, plain=False: manifest
@@ -807,9 +826,11 @@ def test_cached_dependency_installs_without_network(tmp_path, monkeypatch):
 def test_missing_offline_dependency_does_not_use_network(tmp_path, monkeypatch):
     monkeypatch.setattr(Paths, "temp", str(tmp_path))
     monkeypatch.setattr(
-        connection_module.pycurl,
-        "Curl",
-        lambda: (_ for _ in ()).throw(AssertionError("network access attempted")),
+        component_module,
+        "Downloader",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("network access attempted")
+        ),
     )
     manifest = {
         "Steps": [
@@ -821,6 +842,7 @@ def test_missing_offline_dependency_does_not_use_network(tmp_path, monkeypatch):
         ]
     }
     component_manager = object.__new__(ComponentManager)
+    component_manager._ComponentManager__manifests = {}
     component_manager._ComponentManager__manager = SimpleNamespace(
         check_app_dirs=lambda: None
     )
@@ -831,6 +853,7 @@ def test_missing_offline_dependency_does_not_use_network(tmp_path, monkeypatch):
         supported_dependencies={},
     )
     dependency_manager = object.__new__(DependencyManager)
+    dependency_manager._DependencyManager__manifests = {}
     dependency_manager._DependencyManager__manager = manager
     dependency_manager._DependencyManager__repo = SimpleNamespace(
         get=lambda name, plain=False: manifest

@@ -1,10 +1,12 @@
 import threading
+import subprocess
 
 import pytest
 
 from bottles.backend.managers.installer import InstallerManager
 from bottles.backend.models.config import BottleConfig
 from bottles.backend.models.result import Result
+from bottles.backend.repos.installer import InstallerRepo
 
 
 @pytest.mark.parametrize(
@@ -55,12 +57,87 @@ def test_installer_refreshes_catalog_and_cached_manifests(mocker):
     installer._InstallerManager__repo = repository
     installer._InstallerManager__utils_conn = mocker.Mock(check_connection=lambda: True)
 
+    installer._InstallerManager__manifests = {}
+
     assert installer.fetch_catalog() == {"old": {"Name": "Old"}}
     repository.get.return_value = {"Version": 1}
     assert installer.get_installer("office") == {"Version": 1}
     repository.get.return_value = {"Version": 2}
     assert installer.refresh_catalog() == {"new": {"Name": "New"}}
     assert installer.get_installer("office") == {"Version": 2}
+
+
+@pytest.mark.parametrize("connected", [True, False])
+def test_installer_uses_loaded_catalog_without_network(mocker, connected):
+    installer = object.__new__(InstallerManager)
+    installer._InstallerManager__repo = mocker.Mock(
+        catalog={"z": {"Name": "Last"}, "office": {"Name": "Office"}}
+    )
+    installer._InstallerManager__utils_conn = mocker.Mock()
+    installer._InstallerManager__utils_conn.check_connection.return_value = connected
+
+    assert list(installer.fetch_catalog()) == ["office", "z"]
+
+
+@pytest.mark.parametrize("initial_catalog", [None, {}])
+def test_installer_catalog_recovers_when_repository_becomes_ready(
+    mocker, initial_catalog
+):
+    repository = mocker.Mock(catalog=initial_catalog)
+    installer = object.__new__(InstallerManager)
+    installer._InstallerManager__repo = repository
+    installer._InstallerManager__utils_conn = mocker.Mock(check_connection=lambda: True)
+
+    assert installer.fetch_catalog() == {}
+    repository.catalog = {"office": {"Name": "Office"}}
+    assert installer.fetch_catalog() == {"office": {"Name": "Office"}}
+
+
+def test_installer_catalog_loaded_from_repository_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr("bottles.backend.repos.repo.Paths.temp", str(tmp_path))
+    repository = InstallerRepo(
+        "https://repo.example.test/",
+        "",
+        catalog_data=b"office:\n  Name: Office\n  Category: Office\n",
+    )
+    repository.offline = True
+    repository.catalog = None
+    repository.refresh()
+    installer = object.__new__(InstallerManager)
+    installer._InstallerManager__repo = repository
+
+    assert installer.fetch_catalog() == {
+        "office": {"Name": "Office", "Category": "Office"}
+    }
+
+
+def test_installer_retries_missing_manifest_and_caches_success(mocker):
+    manager = mocker.Mock()
+    repository = manager.repository_manager.get_repo.return_value
+    repository.get.side_effect = [False, {"Name": "Office"}]
+    installer = InstallerManager(manager)
+
+    assert installer.get_installer("office") is False
+    assert installer.get_installer("office") == {"Name": "Office"}
+    assert installer.get_installer("office") == {"Name": "Office"}
+    assert repository.get.call_count == 2
+
+
+def test_installer_reports_missing_manifest_without_starting(mocker):
+    manager = mocker.Mock()
+    manager.repository_manager.get_repo.return_value.get.return_value = False
+    installer = InstallerManager(manager)
+    executor = mocker.patch("bottles.backend.managers.installer.WineExecutor")
+    step = mocker.Mock()
+
+    assert installer.has_local_resources(("office",)) == []
+    assert installer.count_steps(("office",)) == {"total": 0, "sections": []}
+    result = installer.install(BottleConfig(Name="Test"), ("office",), step)
+
+    assert result.ok is False
+    assert result.data["message"] == "Cannot find manifest for office."
+    step.assert_not_called()
+    executor.assert_not_called()
 
 
 @pytest.mark.parametrize("current_value", [True, False])
@@ -652,3 +729,144 @@ def test_download_icon_refuses_unsafe_name(tmp_path, monkeypatch):
         is None
     )
     assert not (tmp_path / "icons").exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (
+            Result(False, message="Cannot find manifest for office-runtime."),
+            "Failed to install office-runtime. Cannot find manifest for office-runtime.",
+        ),
+        (
+            Result(False, data={"message": "Download failed."}),
+            "Failed to install office-runtime. Download failed.",
+        ),
+        (Result(False), "Failed to install office-runtime."),
+    ],
+)
+def test_installer_keeps_dependency_failure_details(mocker, failure, message):
+    manager = mocker.Mock()
+    manifest = {
+        "Name": "Editor",
+        "Executable": {"file": "editor.exe", "name": "Editor"},
+        "Dependencies": ["office-runtime", "next-runtime"],
+    }
+    manager.repository_manager.get_repo.return_value.get.return_value = manifest
+    manager.supported_dependencies = {"office-runtime": {"Category": "Essentials"}}
+    manager.dependency_manager.install.return_value = failure
+    installer = InstallerManager(manager)
+    config = BottleConfig(Name="Test")
+    executor = mocker.patch("bottles.backend.managers.installer.WineExecutor")
+    logs = []
+
+    result = installer.install(
+        config, ("editor",), lambda *_args: None, log_fn=logs.append
+    )
+
+    assert result.ok is False
+    assert result.message == message
+    assert result.data["message"] == message
+    assert logs == [message]
+    manager.dependency_manager.install.assert_called_once_with(
+        config, ["office-runtime", {"Category": "Essentials"}]
+    )
+    executor.assert_not_called()
+
+
+def test_installer_skips_installed_dependencies(mocker):
+    manager = mocker.Mock()
+    installer = InstallerManager(manager)
+    config = BottleConfig(Name="Test", Installed_Dependencies=["runtime"])
+
+    installer._InstallerManager__install_dependencies(
+        config, ["runtime"], lambda *_args: None
+    )
+
+    manager.dependency_manager.install.assert_not_called()
+
+
+@pytest.mark.parametrize("stop_after", [None, False, "false", True])
+@pytest.mark.parametrize("is_final", [False, True])
+def test_installer_stops_session_only_when_requested(mocker, stop_after, is_final):
+    manager = mocker.Mock()
+    manifest = {
+        "Name": "Editor",
+        "Executable": {"file": "editor.exe", "name": "Editor"},
+        "Steps": [{"action": "install_exe"}],
+    }
+    if stop_after is not None:
+        manifest["StopAfterInstall"] = stop_after
+    manager.repository_manager.get_repo.return_value.get.return_value = manifest
+    installer = InstallerManager(manager)
+    config = BottleConfig(Name="Test", Runner="soda-test")
+    events = []
+    mocker.patch.object(
+        installer,
+        "_InstallerManager__perform_steps",
+        side_effect=lambda *_args, **_kwargs: events.append("steps") or Result(True),
+    )
+    mocker.patch.object(
+        installer,
+        "_InstallerManager__register_executable",
+        side_effect=lambda *_args: events.append("register") or True,
+    )
+    server = mocker.patch("bottles.backend.managers.installer.WineServer")
+    server.return_value.stop.side_effect = lambda: events.append("stop") or True
+
+    result = installer.install(config, ("editor",), lambda: None, is_final)
+
+    assert result.ok is True
+    if stop_after is True and is_final:
+        assert events == ["steps", "register", "stop"]
+        server.assert_called_once_with(config)
+    else:
+        assert events == ["steps", "register"]
+        server.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [False, OSError("server missing"), subprocess.TimeoutExpired("wineserver", 30)],
+)
+def test_installer_reports_session_cleanup_failure(mocker, failure):
+    manager = mocker.Mock()
+    manager.repository_manager.get_repo.return_value.get.return_value = {
+        "Name": "Editor",
+        "StopAfterInstall": True,
+        "Executable": {"file": "editor.exe", "name": "Editor"},
+    }
+    installer = InstallerManager(manager)
+    mocker.patch.object(
+        installer, "_InstallerManager__register_executable", return_value=True
+    )
+    server = mocker.patch("bottles.backend.managers.installer.WineServer")
+    if isinstance(failure, Exception):
+        server.return_value.stop.side_effect = failure
+    else:
+        server.return_value.stop.return_value = failure
+
+    result = installer.install(BottleConfig(Name="Test"), ("editor",), lambda: None)
+
+    assert result.ok is False
+    assert "could not be stopped" in result.message
+
+
+def test_installer_does_not_stop_after_failed_step(mocker):
+    manager = mocker.Mock()
+    manager.repository_manager.get_repo.return_value.get.return_value = {
+        "Name": "Editor",
+        "StopAfterInstall": True,
+        "Executable": {"file": "editor.exe", "name": "Editor"},
+        "Steps": [{"action": "install_exe"}],
+    }
+    installer = InstallerManager(manager)
+    mocker.patch.object(
+        installer, "_InstallerManager__perform_steps", return_value=Result(False)
+    )
+    server = mocker.patch("bottles.backend.managers.installer.WineServer")
+
+    result = installer.install(BottleConfig(Name="Test"), ("editor",), lambda: None)
+
+    assert result.ok is False
+    server.assert_not_called()

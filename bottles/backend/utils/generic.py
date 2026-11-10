@@ -78,9 +78,16 @@ def detect_encoding(text: bytes, locale_hint: str = None) -> Optional[str]:
     result = chardet.detect(text)
     encoding = result["encoding"]
     confidence = result["confidence"]
-    if confidence < 0.5:
-        return None
-    return encoding
+    if confidence >= 0.5 or encoding is None:
+        return encoding
+    # chardet reports a low confidence for short single-byte samples (e.g. a
+    # Russian Wine message) even when the guess is the only one that decodes.
+    # Prefer it over giving up, but never downgrade data that is valid UTF-8.
+    try:
+        text.decode("utf-8")
+    except UnicodeDecodeError:
+        return encoding
+    return "utf-8"
 
 
 def is_glibc_min_available():

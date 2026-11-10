@@ -14,16 +14,18 @@ class DisplayUtils:
         for i in range(3):
             _port = f":{i}"
             try:
-                # Check if xdpyinfo reports a valid X.org display
-                output = subprocess.check_output(
+                result = subprocess.run(
                     ["xdpyinfo", "-display", _port],
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                ).lower()
-                if "x.org" in output:
-                    return _port
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                pass
+                    capture_output=True,
+                    timeout=1,
+                    check=False,
+                )
+            except FileNotFoundError:
+                return False
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if b"x.org" in result.stdout.lower():
+                return _port
 
         return False
 

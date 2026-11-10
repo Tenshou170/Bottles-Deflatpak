@@ -29,7 +29,6 @@ class WineBoot(WineProgram):
         }
         envs = {
             "WINEDEBUG": "-all",
-            "DISPLAY": ":3.0",
             "WINEDLLOVERRIDES": "winemenubuilder=d",
         }
         forced_dll_overrides = "mscoree=d" if status in (3, 4) else None
@@ -48,7 +47,7 @@ class WineBoot(WineProgram):
 
         if status in states:
             args = f"{states[status]} /nogui"
-            self.launch(
+            return self.launch(
                 args=args,
                 environment=envs,
                 forced_dll_overrides=forced_dll_overrides,

@@ -15,9 +15,11 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import hashlib
 import os
 import re
 import shutil
+import stat
 import tarfile
 import tempfile
 from concurrent.futures import CancelledError
@@ -36,6 +38,7 @@ from bottles.backend.models.result import Result
 from bottles.backend.state import Task, TaskManager
 from bottles.backend.utils import yaml
 from bottles.backend.utils.manager import ManagerUtils
+from bottles.backend.wine.wineserver import WineServer
 
 logging = Logger()
 
@@ -167,6 +170,13 @@ class ProgressTrackingFilter:
 
 
 class BackupManager:
+    _DUPLICATE_ITEMS = (
+        "drive_c",
+        "system.reg",
+        "user.reg",
+        "userdef.reg",
+        "bottle.yml",
+    )
     _BOTTLE_PATH_TOKEN = "%BOTTLE_PATH%"
     _PROGRAM_BACKUP_PATTERN = re.compile(r"^\d{8}-\d{6}-\d{6}$")
     _program_backup_locks: ClassVar[dict[str, Lock]] = {}
@@ -731,7 +741,230 @@ class BackupManager:
             return Result(status=False)
 
     @staticmethod
-    def duplicate_bottle(config: BottleConfig, name: str) -> Result:
+    def _move_inventory(path: str) -> dict:
+        entries = {}
+
+        def failed(error):
+            raise error
+
+        for directory, dirs, files in os.walk(path, onerror=failed):
+            for name in dirs + files:
+                item = os.path.join(directory, name)
+                info = os.lstat(item)
+                relative = os.path.relpath(item, path)
+                if stat.S_ISLNK(info.st_mode):
+                    entries[relative] = ("link", os.readlink(item))
+                elif stat.S_ISDIR(info.st_mode):
+                    entries[relative] = ("directory", stat.S_IMODE(info.st_mode))
+                elif stat.S_ISREG(info.st_mode):
+                    with open(item, "rb") as stream:
+                        digest = hashlib.file_digest(stream, "sha256").digest()
+                    entries[relative] = (
+                        "file",
+                        info.st_size,
+                        info.st_mtime_ns,
+                        digest,
+                        stat.S_IMODE(info.st_mode),
+                    )
+                else:
+                    raise OSError(_("The bottle contains a file that cannot be moved."))
+        return entries
+
+    @staticmethod
+    def move_bottle(config: BottleConfig, destination: str) -> Result:
+        source = os.path.realpath(ManagerUtils.get_bottle_path(config))
+        root = os.path.realpath(Paths.bottles)
+        parent = os.path.realpath(destination)
+        if config.Environment == "Steam":
+            return Result(False, message=_("Move Steam prefixes through Steam."))
+        if not destination or not os.path.isdir(source) or not os.path.isdir(parent):
+            return Result(
+                False, message=_("The source or destination directory is unavailable.")
+            )
+        if os.path.commonpath((source, parent)) == source:
+            return Result(
+                False, message=_("The destination cannot be inside the source bottle.")
+            )
+
+        staging = reference_staging = None
+        committed = False
+        published_target = False
+        task = Task(title=_("Moving {0}").format(config.Name))
+        task_id = TaskManager.add(task)
+        try:
+            references = []
+            for name in os.listdir(root):
+                record = os.path.join(root, name)
+                if not os.path.isdir(record):
+                    continue
+                if os.path.realpath(record) == source:
+                    references.append(record)
+                    continue
+                for filename in ("placeholder.yml", "bottle.yml"):
+                    file = os.path.join(record, filename)
+                    if not os.path.isfile(file):
+                        continue
+                    with open(file) as stream:
+                        data = yaml.load(stream)
+                    if (
+                        isinstance(data, dict)
+                        and data.get("Path")
+                        and os.path.realpath(data["Path"]) == source
+                    ):
+                        references.append(record)
+                        break
+            if len(references) != 1:
+                return Result(
+                    False,
+                    message=_(
+                        "The bottle must have one registered location before moving it."
+                    ),
+                )
+            reference = references[0]
+            target = os.path.join(parent, os.path.basename(reference))
+            custom = parent != root
+            if target == source:
+                return Result(
+                    False, message=_("The bottle is already in this directory.")
+                )
+            if os.path.lexists(target) and target != reference:
+                return Result(
+                    False,
+                    message=_("A bottle or folder already exists at the destination."),
+                )
+            if WineServer(config).is_alive():
+                return Result(
+                    False,
+                    message=_("Close all programs in this bottle before moving it."),
+                )
+            task.subtitle = _("Checking files...")
+            original = BackupManager._move_inventory(source)
+            size = sum(entry[1] for entry in original.values() if entry[0] == "file")
+            if shutil.disk_usage(parent).free < size:
+                return Result(
+                    False,
+                    message=_("There is not enough free space in the destination."),
+                )
+
+            staging = tempfile.mkdtemp(prefix=".bottles-move-", dir=parent)
+            copy = os.path.join(staging, "bottle")
+            task.subtitle = _("Copying files...")
+            shutil.copytree(source, copy, symlinks=True)
+            task.subtitle = _("Verifying files...")
+            if original != BackupManager._move_inventory(
+                copy
+            ) or original != BackupManager._move_inventory(source):
+                return Result(
+                    False,
+                    message=_(
+                        "The bottle changed during the move or its copy could not be verified."
+                    ),
+                )
+
+            loaded = BottleConfig.load(os.path.join(copy, "bottle.yml"))
+            if not loaded.ok:
+                return Result(False, message=loaded.message)
+            moved = loaded.data
+
+            def relocate(value):
+                if isinstance(value, str) and (
+                    value == source or value.startswith(source + os.sep)
+                ):
+                    return target + value[len(source) :]
+                return value
+
+            moved.Path = target if custom else os.path.basename(target)
+            moved.Custom_Path = custom
+            moved.WorkingDir = relocate(moved.WorkingDir)
+            for program in moved.External_Programs.values():
+                for key in ("path", "folder", "icon", "pre_script", "post_script"):
+                    if key in program:
+                        program[key] = relocate(program[key])
+            saved = moved.dump(os.path.join(copy, "bottle.yml"))
+            if not saved.ok:
+                return saved
+            for directory, dirs, files in os.walk(copy):
+                for name in dirs + files:
+                    link = os.path.join(directory, name)
+                    if os.path.islink(link):
+                        old = os.readlink(link)
+                        new = relocate(old)
+                        if old != new:
+                            os.unlink(link)
+                            os.symlink(new, link)
+            if WineServer(
+                config
+            ).is_alive() or original != BackupManager._move_inventory(source):
+                return Result(
+                    False,
+                    message=_(
+                        "The bottle changed during the move. Close its programs and retry."
+                    ),
+                )
+
+            reference_staging = tempfile.mkdtemp(prefix=".bottles-move-", dir=root)
+            previous = os.path.join(reference_staging, "previous")
+            replacement = os.path.join(reference_staging, "replacement")
+            if custom:
+                os.mkdir(replacement)
+                with open(os.path.join(replacement, "placeholder.yml"), "w") as stream:
+                    yaml.dump({"Path": target}, stream)
+                os.rename(copy, target)
+                published_target = True
+            else:
+                replacement = copy
+            os.rename(reference, previous)
+            try:
+                os.rename(replacement, reference)
+            except OSError:
+                os.rename(previous, reference)
+                raise
+            committed = True
+            config.Path = moved.Path
+            config.Custom_Path = moved.Custom_Path
+            config.WorkingDir = moved.WorkingDir
+            config.External_Programs = moved.External_Programs
+            try:
+                shutil.rmtree(previous if reference == source else source)
+            except OSError as error:
+                return Result(
+                    True,
+                    data=config,
+                    message=_(
+                        "The bottle was moved, but its old copy could not be removed: {0}"
+                    ).format(error),
+                )
+            return Result(True, data=config)
+        except (OSError, shutil.Error, ValueError, yaml.YAMLError) as error:
+            logging.error(f"Error moving bottle: {error}")
+            message = str(error)
+            if reference_staging and os.path.exists(
+                os.path.join(reference_staging, "previous")
+            ):
+                message += " " + _("The original bottle is preserved at {0}.").format(
+                    os.path.join(reference_staging, "previous")
+                )
+            return Result(False, message=message)
+        finally:
+            if staging:
+                shutil.rmtree(staging, ignore_errors=True)
+            if reference_staging:
+                if os.path.exists(os.path.join(reference_staging, "previous")) and (
+                    not committed or reference == source
+                ):
+                    logging.warning(
+                        f"The old bottle copy remains in {reference_staging}"
+                    )
+                else:
+                    shutil.rmtree(reference_staging, ignore_errors=True)
+            if not committed and published_target:
+                shutil.rmtree(target, ignore_errors=True)
+            TaskManager.remove(task_id)
+
+    @staticmethod
+    def duplicate_bottle(
+        config: BottleConfig, name: str, destination: Optional[str] = None
+    ) -> Result:
         """
         Duplicates the bottle with the specified new name.
         """
@@ -746,38 +979,86 @@ class BackupManager:
         if not sanitized_name:
             return Result(status=False, message=_("Bottle name is not valid."))
 
-        source_path = ManagerUtils.get_bottle_path(config)
-        destination_path = os.path.join(Paths.bottles, sanitized_name)
+        source_path = os.path.realpath(ManagerUtils.get_bottle_path(config))
+        destination_root = os.path.realpath(destination or Paths.bottles)
+        custom_path = destination_root != os.path.realpath(Paths.bottles)
+        if not os.path.isdir(source_path) or not os.path.isdir(destination_root):
+            return Result(
+                False, message=_("The source or destination directory is unavailable.")
+            )
+        if os.path.commonpath((source_path, destination_root)) == source_path:
+            return Result(
+                False, message=_("The destination cannot be inside the source bottle.")
+            )
+        try:
+            required = 0
+            for item in BackupManager._DUPLICATE_ITEMS:
+                path = os.path.join(source_path, item)
+                if os.path.isdir(path):
+                    for directory, _dirs, files in os.walk(path):
+                        required += sum(
+                            os.lstat(os.path.join(directory, file)).st_size
+                            for file in files
+                            if not os.path.islink(os.path.join(directory, file))
+                        )
+                elif os.path.isfile(path):
+                    required += os.path.getsize(path)
+            if shutil.disk_usage(destination_root).free < required:
+                return Result(
+                    False,
+                    message=_("There is not enough free space in the destination."),
+                )
+        except OSError as error:
+            return Result(False, message=str(error))
+        destination_path = os.path.join(destination_root, sanitized_name)
 
         duplicate_name = name
         suffix = 1
-        while os.path.lexists(destination_path):
+        while os.path.lexists(destination_path) or (
+            custom_path
+            and os.path.lexists(
+                os.path.join(Paths.bottles, os.path.basename(destination_path))
+            )
+        ):
             duplicate_name = f"{name}__{suffix}"
             destination_path = os.path.join(
-                Paths.bottles, f"{sanitized_name}__{suffix}"
+                destination_root, f"{sanitized_name}__{suffix}"
             )
             suffix += 1
 
-        return BackupManager._duplicate_bottle_directory(
-            config, source_path, destination_path, duplicate_name
+        result = BackupManager._duplicate_bottle_directory(
+            config, source_path, destination_path, duplicate_name, custom_path
         )
+        if not result.ok or not custom_path:
+            return result
+        placeholder = os.path.join(Paths.bottles, os.path.basename(destination_path))
+        placeholder_created = False
+        try:
+            os.mkdir(placeholder)
+            placeholder_created = True
+            with open(os.path.join(placeholder, "placeholder.yml"), "x") as file:
+                yaml.dump({"Path": destination_path}, file)
+        except OSError as error:
+            if placeholder_created:
+                shutil.rmtree(placeholder, ignore_errors=True)
+            shutil.rmtree(destination_path, ignore_errors=True)
+            return Result(False, message=str(error))
+        return result
 
     @staticmethod
     def _duplicate_bottle_directory(
-        config: BottleConfig, source_path: str, destination_path: str, new_name: str
+        config: BottleConfig,
+        source_path: str,
+        destination_path: str,
+        new_name: str,
+        custom_path: bool = False,
     ) -> Result:
         destination_created = False
         duplicate_succeeded = False
         try:
             os.makedirs(destination_path)
             destination_created = True
-            for item in [
-                "drive_c",
-                "system.reg",
-                "user.reg",
-                "userdef.reg",
-                "bottle.yml",
-            ]:
+            for item in BackupManager._DUPLICATE_ITEMS:
                 source_item = os.path.join(source_path, item)
                 destination_item = os.path.join(destination_path, item)
                 if os.path.isdir(source_item):
@@ -795,12 +1076,13 @@ class BackupManager:
                 config_data = yaml.load(config_file)
             config_data["Name"] = new_name
             config_data["Path"] = destination_path
+            config_data["Custom_Path"] = custom_path
             with open(config_path, "w") as config_file:
                 yaml.dump(config_data, config_file, indent=4)
 
             logging.info(f"Bottle duplicated successfully as {new_name}.")
             duplicate_succeeded = True
-            return Result(status=True)
+            return Result(status=True, data={"path": destination_path})
         except (OSError, shutil.Error) as e:
             logging.error(f"Error duplicating bottle: {e}")
             return Result(status=False, message=str(e))

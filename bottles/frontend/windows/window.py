@@ -74,6 +74,7 @@ class BottlesWindow(Adw.ApplicationWindow):
     stack_main = Gtk.Template.Child()
     btn_add = Gtk.Template.Child()
     btn_create_bottle = Gtk.Template.Child()
+    btn_create_direct = Gtk.Template.Child()
     btn_install_umu = Gtk.Template.Child()
     btn_search = Gtk.Template.Child()
     btn_donate = Gtk.Template.Child()
@@ -143,6 +144,9 @@ class BottlesWindow(Adw.ApplicationWindow):
         # Signal connections
         self.btn_donate.connect("clicked", self.__open_donation_page)
         self.btn_create_bottle.connect("clicked", self.show_add_view)
+        self.btn_create_direct.connect("clicked", self.show_add_view)
+        self.__update_add_button()
+        self.settings.connect("changed::show-umu", self.__update_add_button)
         self.btn_install_umu.connect("clicked", self.show_umu_search)
         self.btn_search.connect("toggled", self.__toggle_search)
         self.btn_noconnection.connect("clicked", self.check_for_connection)
@@ -443,6 +447,11 @@ class BottlesWindow(Adw.ApplicationWindow):
         self._showing_onboard = False
         GLib.idle_add(self.__continue_startup_dialogs)
 
+    def __update_add_button(self, *_args):
+        self.btn_add.set_visible_child_name(
+            "umu" if self.settings.get_boolean("show-umu") else "bottle"
+        )
+
     def show_add_view(self, widget=False):
         self.pop_add.popdown()
         new_bottle_dialog = BottlesNewBottleDialog()
@@ -541,6 +550,7 @@ class BottlesWindow(Adw.ApplicationWindow):
             self._preferences_window = PreferencesWindow(self)
 
         preferences_window = self._preferences_window
+        preferences_window.refresh_component_usage()
         if page:
             preferences_window.set_visible_page_name(page)
         elif view:

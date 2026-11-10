@@ -103,6 +103,25 @@ def test_desktop_entry_uses_host_launch_command(tmp_path, monkeypatch):
     ]
 
 
+def test_umu_portal_shortcut_does_not_include_flatpak_wrapper(tmp_path, monkeypatch):
+    portal = DynamicLauncherPortal()
+    icon = tmp_path / "icon.svg"
+    icon.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    monkeypatch.setenv("FLATPAK_ID", "com.usebottles.bottles")
+    monkeypatch.setattr(manager, "portal", portal)
+    monkeypatch.setattr(manager.SignalManager, "send", lambda *_args: None)
+
+    ManagerUtils.create_desktop_entry(
+        BottleConfig(Name="Gaming"),
+        {"name": "UMU Game", "umu_game": "game-id"},
+        custom_icon=str(icon),
+    )
+
+    assert 'Exec=bottles-cli umu run --game "game-id"' in portal.desktop_entry
+    assert "flatpak run" not in portal.desktop_entry
+    assert "--command=" not in portal.desktop_entry
+
+
 class PortalProxyStub:
     def __init__(self, mount, host_paths):
         self.mount = mount
@@ -1057,3 +1076,43 @@ def test_get_portal_icon_passes_valid_png(tmp_path):
 def test_get_portal_icon_default_resource():
     icon = ManagerUtils._get_portal_icon("com.usebottles.bottles-program")
     assert icon.get_uri().startswith("resource:")
+    assert (
+        ManagerUtils.remove_desktop_entry(
+            BottleConfig(Name="Unknown"),
+            {"name": "Editor", "executable": "editor.exe"},
+        )
+        is False
+    )
+
+
+def test_program_paths_support_windows_case_and_offline_drives(tmp_path):
+    bottle = tmp_path / "Bottle"
+    drive = tmp_path / "External Drive"
+    drive.mkdir()
+    (drive / "Game.EXE").write_bytes(b"MZfixture")
+    devices = bottle / "dosdevices"
+    devices.mkdir(parents=True)
+    (devices / "d:").symlink_to(drive, target_is_directory=True)
+    config = BottleConfig(Name="Test", Path=str(bottle), Custom_Path=True)
+    config.External_Programs["game"] = {"path": "D:\\game.exe"}
+
+    assert ManagerUtils.program_exists(config, "D:\\game.exe") is True
+    assert ManagerUtils.program_exists(config, str(drive / "Game.EXE")) is True
+    assert ManagerUtils.program_exists(config, "D:\\missing.exe") is False
+    (devices / "d:").unlink()
+    assert ManagerUtils.program_exists(config, "D:\\game.exe") is False
+    assert config.External_Programs == {"game": {"path": "D:\\game.exe"}}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        None,
+        "",
+        "notepad.exe",
+        "%ProgramFiles%\\Editor\\editor.exe",
+        "\\\\server\\share\\game.exe",
+    ],
+)
+def test_unresolved_program_paths_are_left_to_wine(path):
+    assert ManagerUtils.program_exists(BottleConfig(), path) is None

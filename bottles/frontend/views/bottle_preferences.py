@@ -111,6 +111,8 @@ class PreferencesView(Adw.PreferencesPage):
     row_drives = Gtk.Template.Child()
     row_sandbox = Gtk.Template.Child()
     entry_name = Gtk.Template.Child()
+    text_notes = Gtk.Template.Child()
+    btn_save_notes = Gtk.Template.Child()
     switch_mangohud = Gtk.Template.Child()
     switch_obsvkc = Gtk.Template.Child()
     switch_vkbasalt = Gtk.Template.Child()
@@ -172,6 +174,10 @@ class PreferencesView(Adw.PreferencesPage):
         self.window = details.window
         self.manager = details.window.manager
         self.config = config
+        self.btn_save_notes.connect("clicked", self.__save_notes)
+        self.text_notes.get_buffer().connect(
+            "changed", lambda *_args: self.btn_save_notes.set_sensitive(True)
+        )
         self.queue = details.queue
         self.details = details
         self.combo_runner.set_list_factory(
@@ -326,9 +332,7 @@ class PreferencesView(Adw.PreferencesPage):
         self.entry_name.connect("apply", self.__save_name)
         # endregion
 
-        """Set DXVK_NVAPI related rows to visible when an NVIDIA GPU is detected (invisible by default)"""
-        self.row_nvapi.set_visible(is_nvidia_gpu)
-        self.combo_nvapi.set_visible(is_nvidia_gpu)
+        self.__update_nvapi_visibility()
 
         """Toggle some utilities according to its availability"""
         self.switch_gamemode.set_sensitive(gamemode_available)
@@ -590,10 +594,24 @@ class PreferencesView(Adw.PreferencesPage):
         self.combo_language.handler_unblock_by_func(self.__set_language)
         self.combo_windows.handler_unblock_by_func(self.__set_windows)
 
+    def __save_notes(self, _button):
+        buffer = self.text_notes.get_buffer()
+        notes = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        result = self.manager.update_config(self.config, key="Notes", value=notes)
+        if not result.ok:
+            self.window.show_toast(_("The notes could not be saved."))
+            return
+        self.config = result.data["config"]
+        self.btn_save_notes.set_sensitive(False)
+
     def set_config(self, config: BottleConfig):
+        if self.config.Name != config.Name or not self.btn_save_notes.get_sensitive():
+            self.text_notes.get_buffer().set_text(config.Notes)
+            self.btn_save_notes.set_sensitive(False)
         self.config = config
         self.__update_proton_visibility()
         parameters = self.config.Parameters
+        self.__update_nvapi_visibility()
 
         # temporary lock functions connected to the widgets
         self.switch_mangohud.handler_block_by_func(self.__toggle_feature_cb)
@@ -893,6 +911,13 @@ class PreferencesView(Adw.PreferencesPage):
     def __toggle_gamescope(self, _widget: Gtk.Widget, state: bool) -> None:
         self.__toggle_feature(state=state, key="gamescope")
         self.__update_hdr_sensitivity()
+
+    def __update_nvapi_visibility(self) -> None:
+        visible = (
+            GPUUtils.is_gpu(GPUVendors.NVIDIA) or self.config.Parameters.dxvk_nvapi
+        )
+        self.row_nvapi.set_visible(visible)
+        self.combo_nvapi.set_visible(visible)
 
     def __update_hdr_sensitivity(self, active: bool | None = None) -> None:
         if active is None:
@@ -1214,6 +1239,18 @@ class PreferencesView(Adw.PreferencesPage):
         # self.manager.dxvk_available[self.combo_dxvk.get_selected()]
         @GtkUtils.run_in_main_loop
         def update(result, error=False):
+            if error:
+                versions = list(self.windows_versions)
+                selected = 0
+                if self.config.Windows in versions:
+                    selected = versions.index(self.config.Windows)
+                self.combo_windows.handler_block_by_func(self.__set_windows)
+                self.combo_windows.set_selected(selected)
+                self.combo_windows.handler_unblock_by_func(self.__set_windows)
+            else:
+                self.config = self.manager.update_config(
+                    config=self.config, key="Windows", value=windows_version
+                ).data["config"]
             self.spinner_windows.stop()
             self.spinner_windows.set_visible(False)
             self.combo_windows.set_sensitive(True)
@@ -1227,10 +1264,6 @@ class PreferencesView(Adw.PreferencesPage):
 
         for index, windows_version in enumerate(self.windows_versions):
             if self.combo_windows.get_selected() == index:
-                self.config = self.manager.update_config(
-                    config=self.config, key="Windows", value=windows_version
-                ).data["config"]
-
                 RunAsync(rk.lg_set_windows, callback=update, version=windows_version)
                 break
 

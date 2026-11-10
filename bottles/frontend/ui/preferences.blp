@@ -56,6 +56,16 @@ template $PreferencesWindow: Adw.PreferencesDialog {
           valign: center;
         }
       }
+
+      Adw.ComboRow combo_library_order {
+        title: _("Library Order");
+        model: StringList {
+          strings [
+            _("Program Name"),
+            _("Bottle Name"),
+          ]
+        };
+      }
     }
 
     Adw.PreferencesGroup {
@@ -361,6 +371,17 @@ template $PreferencesWindow: Adw.PreferencesDialog {
     name: "umu";
     icon-name: "input-gaming-symbolic";
     title: _("UMU");
+
+    Adw.PreferencesGroup {
+      Adw.ActionRow {
+        title: _("Show UMU");
+        subtitle: _("Show UMU prefixes and the game installation menu.");
+        activatable-widget: switch_show_umu;
+        Switch switch_show_umu {
+          valign: center;
+        }
+      }
+    }
 
     Adw.PreferencesGroup {
       Stack umu_stack {
