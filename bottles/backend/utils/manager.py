@@ -895,10 +895,15 @@ class ManagerUtils:
     def remove_desktop_entry(config, program: dict) -> bool:
         desktop_entry_id = ManagerUtils.get_desktop_entry_id(config, program)
         portal_state = ManagerUtils.get_portal_desktop_entry_state(config, program)
-        if not portal_state:
-            # Either the portal has no entry for this program (False) or it
-            # could not be queried (None): fall back to a manual shortcut, and
-            # report that nothing was removed when there is none.
+        if portal_state is False:
+            # The portal has no launcher for this program: only a leftover
+            # manual shortcut can be removed. When there is none either, the
+            # removal is already done, which must count as success so that
+            # removing a program without a desktop entry is not blocked.
+            return ManagerUtils.remove_manual_desktop_entry(config, program)
+        if portal_state is None:
+            # The portal state could not be determined: fall back to a manual
+            # shortcut and report that nothing was removed when there is none.
             _, entry_paths = ManagerUtils.get_manual_desktop_entry_paths(
                 config, program
             )

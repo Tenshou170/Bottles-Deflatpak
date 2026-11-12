@@ -1001,6 +1001,26 @@ def test_unknown_portal_state_removes_manual_launcher(monkeypatch, tmp_path):
     assert not manual_entry.exists()
 
 
+def test_missing_portal_launcher_without_manual_launcher_succeeds(
+    monkeypatch, tmp_path
+):
+    """Regression: the portal reports the launcher as missing and no manual
+    shortcut exists, so removing the program must not be blocked by a bogus
+    "could not remove the desktop entry" failure."""
+    monkeypatch.setattr(
+        ManagerUtils, "get_portal_desktop_entry_state", lambda *_args: False
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert (
+        ManagerUtils.remove_desktop_entry(
+            BottleConfig(Name="Gachas"),
+            {"name": "injector", "executable": "injector.exe"},
+        )
+        is True
+    )
+
+
 def test_unknown_portal_state_without_manual_launcher_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ManagerUtils, "get_portal_desktop_entry_state", lambda *_args: None
@@ -1076,13 +1096,6 @@ def test_get_portal_icon_passes_valid_png(tmp_path):
 def test_get_portal_icon_default_resource():
     icon = ManagerUtils._get_portal_icon("com.usebottles.bottles-program")
     assert icon.get_uri().startswith("resource:")
-    assert (
-        ManagerUtils.remove_desktop_entry(
-            BottleConfig(Name="Unknown"),
-            {"name": "Editor", "executable": "editor.exe"},
-        )
-        is False
-    )
 
 
 def test_program_paths_support_windows_case_and_offline_drives(tmp_path):
