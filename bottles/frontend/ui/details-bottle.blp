@@ -159,447 +159,450 @@ Popover popover_exec_settings {
   }
 }
 
-template $DetailsBottle: Overlay {
-  Adw.PreferencesPage {
-
-
-  Adw.PreferencesGroup {
-    Adw.Clamp {
-      maximum-size: 720;
-
-      Box {
-        orientation: vertical;
-        spacing: 12;
-
-        Label label_name {
-          halign: center;
-          justify: center;
-          wrap: true;
-          max-width-chars: 30;
-          label: _("My bottle");
-          wrap-mode: word_char;
-          use-markup: false;
-
-          styles [
-            "title-1",
-          ]
-        }
-
-        Box {
-          spacing: 6;
-          halign: center;
-
-          Box {
-            spacing: 6;
-
-            styles [
-              "tag",
-            ]
-
-            Label label_arch {
-              label: _("Win64");
-
-              styles [
-                "heading",
-              ]
-            }
-          }
-
-          Box {
-            spacing: 6;
-
-            styles [
-              "tag",
-            ]
-
-            Label label_environment {
-              label: _("Environment");
-
-              styles [
-                "heading",
-              ]
-            }
-          }
-
-          Box {
-            spacing: 6;
-
-            styles [
-              "tag",
-            ]
-
-            Image img_runner {
-              visible: false;
-              pixel-size: 18;
-            }
-
-            Label label_runner {
-              label: _("Runner");
-
-              styles [
-                "heading",
-              ]
-            }
-          }
-
-          Label dot_versioning {
-            label: "·";
-          }
-
-          Grid grid_versioning {
-            tooltip-text: _("Versioning enabled for this bottle");
-            halign: center;
-            valign: center;
-            column-spacing: 6;
-
-            styles [
-              "tag",
-              "tag-versioning",
-            ]
-
-            Image img_versioning {
-              tooltip-text: _("Versioning is active for this bottle.");
-              halign: center;
-              valign: center;
-              icon-name: "view-wrapped-symbolic";
-            }
-
-            Label label_state {
-              halign: center;
-              valign: center;
-              label: _("0");
-
-              styles [
-                "heading",
-              ]
-            }
-          }
-        }
-      }
-    }
-  }
-
-  Adw.PreferencesGroup {
-    title: _("Quick actions");
-
-    Adw.ActionRow {
-      activatable: false;
-      focusable: false;
-      title: _("Launch executable");
-      subtitle: _("Run a program now or adjust its launch options.");
-
-      [suffix]
-      MenuButton btn_exec_settings {
-        valign: center;
-        icon-name: "applications-system-symbolic";
-        popover: popover_exec_settings;
-
-        styles [
-          "flat",
-        ]
-      }
-
-      [suffix]
-      Button btn_execute {
-        valign: center;
-
-        Box {
-          spacing: 6;
-
-          Image {
-            icon-name: "media-playback-start-symbolic";
-          }
-
-          Label {
-            label: _("Run Executable…");
-          }
-        }
-      }
-    }
-
-    Adw.ActionRow {
-      activatable: false;
-      focusable: false;
-      title: _("Analyze with Eagle (Beta)");
-      subtitle: _("Eagle will extract and analyze as much details as possible of an executable to provide you with a compatibility report.");
-
-      [suffix]
-      Button btn_eagle {
-        valign: center;
-
-        Box {
-          spacing: 6;
-
-          Image {
-            icon-name: "com.usebottles.eagle-symbolic";
-          }
-
-          Label {
-            label: _("Analyse…");
-          }
-        }
-      }
-    }
-
-    Adw.ActionRow {
-      activatable: false;
-      focusable: false;
-      title: _("Browse C:/ drive");
-      subtitle: _("Browse the files of this bottle.");
-
-      [suffix]
-      Button btn_browse {
-        valign: center;
-
-        Box {
-          spacing: 6;
-
-          Image {
-            icon-name: "document-open-symbolic";
-          }
-
-          Label {
-            label: _("Browse");
-          }
-        }
-      }
-    }
-  }
-
-  Adw.PreferencesGroup group_programs {
-    title: _("Programs");
-
-    Adw.ActionRow row_no_programs {
-      subtitle: _("Click \"Run Executable…\" to run an executable, \"Add Shortcuts…\" to add an executable to the Programs list, or \"Install Programs…\" to install programs curated by the community.");
-    }
-
-    Adw.PreferencesRow bottom_bar {
-      activatable: false;
-      focusable: false;
-
-      Box {
-        Button add_shortcuts {
-          hexpand: true;
-
-          Box {
-            halign: center;
-
-            Image {
-              icon-name: "list-add-symbolic";
-            }
-
-            Separator {
-              styles [
-                "spacer"
-              ]
-            }
-
-            Label {
-              label: _("Add Shortcuts…");
-            }
-          }
-
-          styles [
-            "flat"
-          ]
-        }
-
-        Separator {}
-
-        Button install_programs {
-          hexpand: true;
-
-          Box {
-            halign: center;
-
-            Image {
-              icon-name: "folder-download-symbolic";
-            }
-
-            Separator {
-              styles [
-                "spacer"
-              ]
-            }
-
-            Label {
-              label: _("Install Programs…");
-            }
-          }
-
-          styles [
-            "flat"
-          ]
-        }
-
-        styles [
-          "linked"
-        ]
-      }
+template $DetailsBottle: Adw.Bin {
+  Overlay {
+    [overlay]
+    Adw.StatusPage drop_overlay {
+      visible: false;
+      icon-name: "system-run-symbolic";
+      title: _("Drop files to execute them");
 
       styles [
-        "bottom-bar"
+        "dragndrop_overlay",
       ]
     }
-  }
 
-  Adw.PreferencesGroup group_updates {
-    title: _("Updates");
-  }
+    Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        Adw.Clamp {
+          maximum-size: 720;
 
-  Adw.PreferencesGroup group_options {
-    title: _("Options");
+          Box {
+            orientation: vertical;
+            spacing: 12;
 
-    Adw.ActionRow row_preferences {
-      activatable: true;
-      title: _("Settings");
-      subtitle: _("Configure bottle settings.");
+            Label label_name {
+              halign: center;
+              justify: center;
+              wrap: true;
+              max-width-chars: 30;
+              label: _("My bottle");
+              wrap-mode: word_char;
+              use-markup: false;
 
-      Image {
-        icon-name: "go-next-symbolic";
-      }
-    }
+              styles [
+                "title-1",
+              ]
+            }
 
-    Adw.ActionRow row_dependencies {
-      activatable: true;
-      title: _("Dependencies");
-      subtitle: _("Install dependencies for programs.");
+            Box {
+              spacing: 6;
+              halign: center;
 
-      Image {
-        icon-name: "go-next-symbolic";
-      }
-    }
+              Box {
+                spacing: 6;
 
-    Adw.ActionRow row_registry_rules {
-      activatable: true;
-      title: _("Registry Rules");
-      subtitle: _("Manage reusable registry tweaks.");
+                styles [
+                  "tag",
+                ]
 
-      Image {
-        icon-name: "go-next-symbolic";
-      }
-    }
+                Label label_arch {
+                  label: _("Win64");
 
-    Adw.ActionRow row_snapshots {
-      activatable: true;
-      title: _("Snapshots");
-      subtitle: _("Create and manage bottle states.");
+                  styles [
+                    "heading",
+                  ]
+                }
+              }
 
-      Image {
-        icon-name: "go-next-symbolic";
-      }
-    }
+              Box {
+                spacing: 6;
 
-    Adw.ActionRow row_taskmanager {
-      activatable: true;
-      title: _("Task Manager");
-      subtitle: _("Manage running programs.");
+                styles [
+                  "tag",
+                ]
 
-      Image {
-        icon-name: "go-next-symbolic";
-      }
-    }
-  }
+                Label label_environment {
+                  label: _("Environment");
 
-  Adw.PreferencesGroup group_utilities {
-    title: _("Tools");
+                  styles [
+                    "heading",
+                  ]
+                }
+              }
 
-    Adw.ActionRow row_cmd {
-      activatable: true;
-      title: _("Command Line");
-      subtitle: _("Run commands inside the Bottle.");
+              Box {
+                spacing: 6;
 
-      Image {
-        icon-name: "external-link-symbolic";
-      }
-    }
+                styles [
+                  "tag",
+                ]
 
-    Adw.ActionRow row_regedit {
-      activatable: true;
-      title: _("Registry Editor");
-      subtitle: _("Edit the internal registry.");
+                Image img_runner {
+                  visible: false;
+                  pixel-size: 18;
+                }
 
-      Image {
-        icon-name: "external-link-symbolic";
-      }
-    }
+                Label label_runner {
+                  label: _("Runner");
 
-    Adw.ExpanderRow {
-      title: _("Legacy Wine Tools");
+                  styles [
+                    "heading",
+                  ]
+                }
+              }
 
-      Adw.ActionRow row_run {
-        activatable: true;
-        title: _("Run");
+              Label dot_versioning {
+                label: "·";
+              }
 
-        Image {
-          icon-name: "external-link-symbolic";
+              Button btn_versioning_badge {
+                tooltip-text: _("View snapshots");
+                halign: center;
+                valign: center;
+
+                styles [
+                  "tag",
+                  "tag-versioning",
+                  "flat",
+                ]
+
+                Box {
+                  spacing: 6;
+
+                  Image {
+                    icon-name: "view-wrapped-symbolic";
+                  }
+
+                  Label label_state {
+                    label: "main";
+                  }
+                }
+              }
+            }
+          }
         }
       }
 
-      Adw.ActionRow row_explorer {
-        activatable: true;
-        title: _("Explorer");
+      Adw.PreferencesGroup {
+        title: _("Quick actions");
 
-        Image {
-          icon-name: "external-link-symbolic";
+        Adw.ActionRow {
+          activatable: false;
+          focusable: false;
+          title: _("Launch executable");
+          subtitle: _("Run a program now or adjust its launch options.");
+
+          [suffix]
+          MenuButton btn_exec_settings {
+            valign: center;
+            icon-name: "applications-system-symbolic";
+            popover: popover_exec_settings;
+
+            styles [
+              "flat",
+            ]
+          }
+
+          [suffix]
+          Button btn_execute {
+            valign: center;
+
+            Box {
+              spacing: 6;
+
+              Image {
+                icon-name: "media-playback-start-symbolic";
+              }
+
+              Label {
+                label: _("Run Executable…");
+              }
+            }
+          }
+        }
+
+        Adw.ActionRow {
+          activatable: false;
+          focusable: false;
+          title: _("Analyze with Eagle (Beta)");
+          subtitle: _("Eagle will extract and analyze as much details as possible of an executable to provide you with a compatibility report.");
+
+          [suffix]
+          Button btn_eagle {
+            valign: center;
+
+            Box {
+              spacing: 6;
+
+              Image {
+                icon-name: "com.usebottles.eagle-symbolic";
+              }
+
+              Label {
+                label: _("Analyse…");
+              }
+            }
+          }
+        }
+
+        Adw.ActionRow {
+          activatable: false;
+          focusable: false;
+          title: _("Browse C:/ drive");
+          subtitle: _("Browse the files of this bottle.");
+
+          [suffix]
+          Button btn_browse {
+            valign: center;
+
+            Box {
+              spacing: 6;
+
+              Image {
+                icon-name: "document-open-symbolic";
+              }
+
+              Label {
+                label: _("Browse");
+              }
+            }
+          }
         }
       }
 
-      Adw.ActionRow row_taskmanager_legacy {
-        activatable: true;
-        title: _("Task Manager");
+      Adw.PreferencesGroup group_programs {
+        title: _("Programs");
 
-        Image {
-          icon-name: "external-link-symbolic";
+        Adw.ActionRow row_no_programs {
+          subtitle: _("Click \"Run Executable…\" to run an executable, \"Add Shortcuts…\" to add an executable to the Programs list, or \"Install Programs…\" to install programs curated by the community.");
+        }
+
+        Adw.PreferencesRow bottom_bar {
+          activatable: false;
+          focusable: false;
+
+          Box {
+            Button add_shortcuts {
+              hexpand: true;
+
+              Box {
+                halign: center;
+
+                Image {
+                  icon-name: "list-add-symbolic";
+                }
+
+                Separator {
+                  styles [
+                    "spacer"
+                  ]
+                }
+
+                Label {
+                  label: _("Add Shortcuts…");
+                }
+              }
+
+              styles [
+                "flat"
+              ]
+            }
+
+            Separator {}
+
+            Button install_programs {
+              hexpand: true;
+
+              Box {
+                halign: center;
+
+                Image {
+                  icon-name: "folder-download-symbolic";
+                }
+
+                Separator {
+                  styles [
+                    "spacer"
+                  ]
+                }
+
+                Label {
+                  label: _("Install Programs…");
+                }
+              }
+
+              styles [
+                "flat"
+              ]
+            }
+
+            styles [
+              "linked"
+            ]
+          }
+
+          styles [
+            "bottom-bar"
+          ]
         }
       }
 
-      Adw.ActionRow row_debug {
-        activatable: true;
-        title: _("Debugger");
+      Adw.PreferencesGroup group_updates {
+        title: _("Updates");
+      }
 
-        Image {
-          icon-name: "external-link-symbolic";
+      Adw.PreferencesGroup group_options {
+        title: _("Options");
+
+        Adw.ActionRow row_preferences {
+          activatable: true;
+          title: _("Settings");
+          subtitle: _("Configure bottle settings.");
+
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+
+        Adw.ActionRow row_dependencies {
+          activatable: true;
+          title: _("Dependencies");
+          subtitle: _("Install dependencies for programs.");
+
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+
+        Adw.ActionRow row_registry_rules {
+          activatable: true;
+          title: _("Registry Rules");
+          subtitle: _("Manage reusable registry tweaks.");
+
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+
+        Adw.ActionRow row_snapshots {
+          activatable: true;
+          title: _("Snapshots");
+          subtitle: _("Create and manage bottle states.");
+
+          [suffix]
+          Button btn_snapshots_settings {
+            valign: center;
+            icon-name: "emblem-system-symbolic";
+            styles [ "flat" ]
+          }
+
+          Image {
+            icon-name: "go-next-symbolic";
+          }
+        }
+
+        Adw.ActionRow row_taskmanager {
+          activatable: true;
+          title: _("Task Manager");
+          subtitle: _("Manage running programs.");
+
+          Image {
+            icon-name: "go-next-symbolic";
+          }
         }
       }
 
-      Adw.ActionRow row_winecfg {
-        activatable: true;
-        title: _("Configuration");
+      Adw.PreferencesGroup group_utilities {
+        title: _("Tools");
 
-        Image {
-          icon-name: "external-link-symbolic";
+        Adw.ActionRow row_cmd {
+          activatable: true;
+          title: _("Command Line");
+          subtitle: _("Run commands inside the Bottle.");
+
+          Image {
+            icon-name: "external-link-symbolic";
+          }
         }
-      }
 
-      Adw.ActionRow row_uninstaller {
-        activatable: true;
-        title: _("Uninstaller");
+        Adw.ActionRow row_regedit {
+          activatable: true;
+          title: _("Registry Editor");
+          subtitle: _("Edit the internal registry.");
 
-        Image {
-          icon-name: "external-link-symbolic";
+          Image {
+            icon-name: "external-link-symbolic";
+          }
         }
-      }
 
-      Adw.ActionRow row_controlpanel {
-        activatable: true;
-        title: _("Control Panel");
+        Adw.ExpanderRow {
+          title: _("Legacy Wine Tools");
 
-        Image {
-          icon-name: "external-link-symbolic";
+          Adw.ActionRow row_run {
+            activatable: true;
+            title: _("Run");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_explorer {
+            activatable: true;
+            title: _("Explorer");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_taskmanager_legacy {
+            activatable: true;
+            title: _("Task Manager");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_debug {
+            activatable: true;
+            title: _("Debugger");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_winecfg {
+            activatable: true;
+            title: _("Configuration");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_uninstaller {
+            activatable: true;
+            title: _("Uninstaller");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
+
+          Adw.ActionRow row_controlpanel {
+            activatable: true;
+            title: _("Control Panel");
+
+            Image {
+              icon-name: "external-link-symbolic";
+            }
+          }
         }
       }
     }
-  }
-}
-  [overlay]
-  Adw.StatusPage drop_overlay {
-    visible: false;
-    icon-name: "system-run-symbolic";
-    title: _("Drop files to execute them");
-
-    styles [
-      "dragndrop_overlay",
-    ]
   }
 }

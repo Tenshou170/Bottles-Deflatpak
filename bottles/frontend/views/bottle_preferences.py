@@ -43,6 +43,7 @@ from bottles.backend.models.enum import Arch
 from bottles.backend.models.result import Result
 from bottles.backend.runner import Runner
 from bottles.backend.utils.display import DisplayUtils
+from bottles.backend.utils.generic import is_esync_missing
 from bottles.backend.utils.gpu import GPUUtils, GPUVendors
 from bottles.backend.utils.manager import ManagerUtils
 from bottles.backend.utils.steam import SteamUtils
@@ -50,6 +51,7 @@ from bottles.backend.utils.threading import RunAsync
 from bottles.backend.utils.vulkan import VulkanUtils
 from bottles.backend.wine.adaptive import is_supported_runner
 from bottles.backend.wine.regkeys import RegKeys
+from bottles.backend.wine.winecommand import WineCommand
 from bottles.frontend.utils.common import format_runner_name
 from bottles.frontend.utils.gtk import GtkUtils
 from bottles.frontend.windows.display import DisplayDialog
@@ -830,6 +832,17 @@ class PreferencesView(Adw.PreferencesPage):
 
         self.__set_steam_rules()
         self.__update_adaptive_launch_support()
+        self.__update_esync_warning(parameters.sync)
+
+    def __update_esync_warning(self, sync: str) -> None:
+        if not hasattr(self, "_esync_warning"):
+            self._esync_warning = self.__add_unavailable_indicator(
+                self.combo_sync,
+                None,
+                _("This runner has no Esync, so it will use its default."),
+            )
+        runner = WineCommand.get_runner_info(self.config)[0]
+        self._esync_warning.set_visible(sync == "esync" and is_esync_missing(runner))
 
     def __update_adaptive_launch_support(self) -> None:
         tracing = tracing_supported(self.config)
@@ -950,6 +963,7 @@ class PreferencesView(Adw.PreferencesPage):
         if sync == self.config.Parameters.sync:
             return
 
+        self.__update_esync_warning(sync)
         self.queue.add_task()
         self.combo_sync.set_sensitive(False)
         RunAsync(
@@ -1051,6 +1065,7 @@ class PreferencesView(Adw.PreferencesPage):
                 if "config" in result.data:
                     self.config = result.data["config"]
                 self.__update_adaptive_launch_support()
+                self.__update_esync_warning(self.config.Parameters.sync)
                 if self.config.Parameters.use_steam_runtime:
                     self.switch_steam_runtime.handler_block_by_func(
                         self.__toggle_feature_cb

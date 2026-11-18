@@ -56,8 +56,7 @@ template $ImporterView: Adw.Bin {
     }
 
     Adw.PreferencesPage {
-      vexpand: true;
-
+      visible: bind group_prefixes.visible;
       Adw.PreferencesGroup group_prefixes {
         visible: false;
 

@@ -80,7 +80,7 @@ from bottles.backend.umu import (
 from bottles.backend.utils import yaml
 from bottles.backend.utils.connection import ConnectionUtils
 from bottles.backend.utils.file import FileUtils
-from bottles.backend.utils.generic import sort_by_version
+from bottles.backend.utils.generic import is_ntsync_available, sort_by_version
 from bottles.backend.utils.gpu import GPUUtils, GPUVendors
 from bottles.backend.utils.gsettings_stub import GSettingsStub
 from bottles.backend.utils.lnk import LnkUtils
@@ -94,6 +94,7 @@ from bottles.backend.wine.reg import Reg
 from bottles.backend.wine.regkeys import RegKeys
 from bottles.backend.wine.uninstaller import Uninstaller
 from bottles.backend.wine.wineboot import WineBoot
+from bottles.backend.wine.winecommand import WineCommand
 from bottles.backend.wine.winepath import WinePath
 from bottles.backend.wine.wineserver import WineServer
 
@@ -572,7 +573,7 @@ class Manager(metaclass=Singleton):
                 return
             payload: ProcessFinishedPayload = data.data  # type: ignore
             sid = self._launch_to_session.pop(payload.launch_id, -1)
-            if sid and sid > 0:
+            if sid and sid != -1:
                 status = payload.status
                 ended_at = int(payload.ended_at or time.time())
                 logging.debug(
@@ -2141,10 +2142,8 @@ class Manager(metaclass=Singleton):
         profile_user = "steamuser" if is_proton else None
 
         if not WineUtils.ensure_user_profile_alias(bottle_complete_path, profile_user):
-            logging.error(
-                "Could not create a shared Wine and Proton user profile.", jn=True
-            )
             message = _("Failed to prepare the bottle user profile.")
+            logging.error(message, jn=True)
             log_update(message)
             return Result(False, data={"config": config}, message=message)
 
@@ -2292,7 +2291,11 @@ class Manager(metaclass=Singleton):
                 "Installed_Dependencies": config.Installed_Dependencies,
             }
         elif environment.lower() not in ["custom"]:
-            env = Samples.environments[environment.lower()]
+            env = deepcopy(Samples.environments[environment.lower()])
+            if env.get("Parameters", {}).get("sync") == "ntsync":
+                runner_command, _runtime = WineCommand.get_runner_info(config)
+                if not is_ntsync_available(runner_command):
+                    env["Parameters"]["sync"] = "fsync"
         elif custom_environment:
             try:
                 with open(custom_environment, "r", encoding="utf-8") as f:

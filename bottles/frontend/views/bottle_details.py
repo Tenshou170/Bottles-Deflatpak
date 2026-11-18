@@ -59,10 +59,11 @@ from bottles.frontend.utils.sandbox_guard import guard_sandbox_launch
 from bottles.frontend.widgets.program import ProgramEntry
 from bottles.frontend.windows.duplicate import DuplicateDialog
 from bottles.frontend.windows.upgradeversioning import UpgradeVersioningDialog
+from bottles.frontend.windows.versioning_settings import VersioningSettingsDialog
 
 
 @Gtk.Template(resource_path="/com/usebottles/bottles/details-bottle.ui")
-class BottleView(Gtk.Overlay):
+class BottleView(Adw.Bin):
     __gtype_name__ = "DetailsBottle"
     __registry = []
 
@@ -109,7 +110,8 @@ class BottleView(Gtk.Overlay):
     btn_troubleshoot_doc = Gtk.Template.Child()
     label_name = Gtk.Template.Child()
     dot_versioning = Gtk.Template.Child()
-    grid_versioning = Gtk.Template.Child()
+    btn_versioning_badge = Gtk.Template.Child()
+    btn_snapshots_settings = Gtk.Template.Child()
     group_programs = Gtk.Template.Child()
     group_updates = Gtk.Template.Child()
     actions = Gtk.Template.Child()
@@ -175,6 +177,8 @@ class BottleView(Gtk.Overlay):
         self.row_preferences.connect("activated", self.__change_page, "preferences")
         self.row_dependencies.connect("activated", self.__change_page, "dependencies")
         self.row_snapshots.connect("activated", self.__change_page, "versioning")
+        self.btn_versioning_badge.connect("clicked", self.__change_page, "versioning")
+        self.btn_snapshots_settings.connect("clicked", self.__show_versioning_settings)
         self.row_taskmanager.connect("activated", self.__change_page, "taskmanager")
         self.row_winecfg.connect("activated", self.run_winecfg)
         self.row_run.connect("activated", self.run_dialog)
@@ -216,6 +220,11 @@ class BottleView(Gtk.Overlay):
             self.leaflet.navigate(Adw.NavigationDirection.FORWARD)
         except:  # pylint: disable=bare-except
             pass
+
+    def __show_versioning_settings(self, widget):
+        """Open the Versioning settings dialog."""
+        dialog = VersioningSettingsDialog(window=self.window, config=self.config)
+        dialog.present()
 
     def on_drop(self, drop_target, value: Gdk.FileList, x, y, user_data=None):
         self.drop_overlay.set_visible(False)
@@ -297,7 +306,7 @@ class BottleView(Gtk.Overlay):
 
         # set versioning
         self.dot_versioning.set_visible(self.config.Versioning)
-        self.grid_versioning.set_visible(self.config.Versioning)
+        self.btn_versioning_badge.set_visible(self.config.Versioning)
         self.label_state.set_text(str(self.config.State))
 
         self.__set_steam_rules()

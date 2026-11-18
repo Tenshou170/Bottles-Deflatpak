@@ -4,6 +4,7 @@ import os
 import shlex
 import subprocess
 import time
+from unittest.mock import Mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,6 +110,8 @@ def test_changed_fonts_refresh_before_launch(monkeypatch, tmp_path, refresh_ok):
 
         def run(self):
             events.append("refresh")
+            refreshed_time = fonts.stat().st_mtime + 1
+            os.utime(fonts, (refreshed_time, refreshed_time))
             return Result(refresh_ok)
 
     monkeypatch.setattr("bottles.backend.wine.wineprogram.WineCommand", Command)
@@ -1206,6 +1209,19 @@ def test_winecommand_applies_selected_sync_environment(
     WineCommand._apply_sync_environment(env, sync, "/runner/bin/wine")
 
     assert env.get()["envs"] == expected
+
+
+@pytest.mark.parametrize("missing", (True, False))
+def test_esync_warns_when_runner_lacks_it_and_keeps_the_setting(monkeypatch, missing):
+    warning = Mock()
+    monkeypatch.setattr(winecommand, "is_esync_missing", lambda _runner: missing)
+    monkeypatch.setattr(winecommand.logging, "warning", warning)
+    env = WineEnv(clean=True)
+
+    WineCommand._apply_sync_environment(env, "esync", "/runner/bin/wine")
+
+    assert env.get()["envs"] == {"WINEESYNC": "1"}
+    assert warning.called is missing
 
 
 def test_frame_rate_limit_applies_to_dxvk_and_vkd3d():

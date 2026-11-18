@@ -23,6 +23,7 @@ from bottles.backend.utils.connection import ConnectionUtils
 class FakeCurl:
     URL = pycurl.URL
     FOLLOWLOCATION = pycurl.FOLLOWLOCATION
+    FAILONERROR = pycurl.FAILONERROR
     HTTPHEADER = pycurl.HTTPHEADER
     NOBODY = pycurl.NOBODY
     NOPROGRESS = pycurl.NOPROGRESS
@@ -258,6 +259,7 @@ class IndexCurl:
     FAILONERROR = pycurl.FAILONERROR
     URL = pycurl.URL
     FOLLOWLOCATION = pycurl.FOLLOWLOCATION
+    FAILONERROR = pycurl.FAILONERROR
     CONNECTTIMEOUT = pycurl.CONNECTTIMEOUT
     TIMEOUT = pycurl.TIMEOUT
     NOPROGRESS = pycurl.NOPROGRESS

@@ -28,5 +28,20 @@ def _setup_test_env() -> None:
         os.environ.setdefault("GSETTINGS_SCHEMA_DIR", data_dir)
     os.environ.setdefault("GSETTINGS_BACKEND", "memory")
 
+    # Upstream's frontend tests register the compiled UI resource, defaulting
+    # to the Flatpak prefix (/app). This fork runs from a local build or a
+    # system install, so resolve the resource here instead of asking every
+    # test module to guess the layout.
+    for candidate in (
+        os.path.join(
+            repo_root, "build", "bottles", "frontend", "ui", "bottles.gresource"
+        ),
+        os.path.join(repo_root, "build", "bottles.gresource"),
+        "/usr/share/bottles/bottles.gresource",
+    ):
+        if os.path.isfile(candidate):
+            os.environ.setdefault("BOTTLES_TEST_RESOURCE", candidate)
+            break
+
 
 _setup_test_env()

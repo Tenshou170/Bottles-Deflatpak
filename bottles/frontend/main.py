@@ -18,10 +18,11 @@
 import gettext
 import locale
 import sys
-from os import environ, path
+from os import environ, listdir, path
 
 import gi
 
+from bottles.backend.globals import Paths
 from bottles.backend.health import HealthChecker
 from bottles.backend.logger import Logger
 from bottles.backend.utils.threading import RunAsync
@@ -222,17 +223,27 @@ class Bottles(Adw.Application):
                 return 0
 
             try:
-                from bottles.frontend.windows.bottlepicker import BottlePickerDialog
-
-                dialog = BottlePickerDialog(application=self, arg_exe=self.arg_exe)
-                dialog.present()
-                return 0
+                return self.__show_bottle_picker(self.arg_exe)
             except Exception as e:
                 logging.error(_("Error while processing executable: {0}").format(e))
                 return False
 
         self.do_activate()
 
+        return 0
+
+    def __show_bottle_picker(self, executable):
+        for directory in (Paths.runners, Paths.dxvk, Paths.vkd3d):
+            if not path.isdir(directory) or not any(
+                path.isdir(path.join(directory, entry)) for entry in listdir(directory)
+            ):
+                self.do_activate()
+                return 0
+
+        from bottles.frontend.windows.bottlepicker import BottlePickerDialog
+
+        dialog = BottlePickerDialog(application=self, arg_exe=executable)
+        dialog.present()
         return 0
 
     def __process_uri(self, uri):
@@ -274,11 +285,7 @@ class Bottles(Adw.Application):
             return 0
 
         try:
-            from bottles.frontend.windows.bottlepicker import BottlePickerDialog
-
-            dialog = BottlePickerDialog(application=self, arg_exe=uri)
-            dialog.present()
-            return 0
+            return self.__show_bottle_picker(uri)
         except Exception as e:
             logging.error(
                 _("Error while processing URI: {0}").format(e),

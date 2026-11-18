@@ -26,6 +26,7 @@ from bottles.backend.utils.display import DisplayUtils
 from bottles.backend.utils.generic import (
     detect_encoding,
     get_host_architecture,
+    is_esync_missing,
     is_ntsync_available,
 )
 from bottles.backend.utils.gpu import GPUUtils
@@ -934,6 +935,11 @@ class WineCommand:
     @staticmethod
     def _apply_sync_environment(env: WineEnv, sync: str, runner: str) -> None:
         if sync == "esync":
+            if is_esync_missing(runner):
+                logging.warning(
+                    "esync requested but the runner has no esync, "
+                    "it will use its default"
+                )
             env.add("WINEESYNC", "1")
         elif sync == "fsync":
             env.add("WINEFSYNC", "1")
@@ -948,17 +954,28 @@ class WineCommand:
                 )
                 env.add("WINEFSYNC", "1")
 
-    def _get_runner_info(self) -> tuple[str, str]:
-        config = self.config
+    @staticmethod
+    def _resolve_runner(
+        config: BottleConfig,
+    ) -> tuple[str, str, Optional[str], Optional[str]]:
+        """
+        Resolve the runner command for a config.
+
+        Returns the runner command, its runtime, the Proton script to wrap the
+        command with (when the runner ships one and Proton scripts are enabled)
+        and the Proton root to hand over to umu-run.
+        """
         runner = ManagerUtils.get_runner_path(config.Runner)
         arch = config.Arch
         runner_runtime = ""
+        proton_script: Optional[str] = None
+        umu_proton_path: Optional[str] = None
 
         if config.Environment == "Steam":
             runner = config.RunnerPath
 
         if runner in [None, ""]:
-            return "", ""
+            return "", "", None, None
 
         if SteamUtils.is_proton(runner):
             """
@@ -972,13 +989,13 @@ class WineCommand:
                 # umu-run silently picks its own default Proton instead.
                 # umu-run expects the runner ROOT (the directory holding
                 # toolmanifest.vdf), not the dist/files subdir.
-                self.umu_proton_path = runner
+                umu_proton_path = runner
                 runner = UMUUtils.get_umu_run_path()
-                return runner, ""
+                return runner, "", None, umu_proton_path
 
             _proton_script = os.path.join(runner, "proton")
             if os.path.isfile(_proton_script) and config.Parameters.use_proton_scripts:
-                self.proton_script = shlex.quote(_proton_script)
+                proton_script = shlex.quote(_proton_script)
 
             runner = os.path.join(SteamUtils.get_dist_directory(runner), "bin/wine")
 
@@ -989,7 +1006,7 @@ class WineCommand:
             """
             runner = WineUtils.find_system_wine()
             if runner is None:
-                return "", ""
+                return "", "", None, None
 
         else:
             runner = f"{runner}/bin/wine"
@@ -999,6 +1016,21 @@ class WineCommand:
 
         runner = shlex.quote(runner)  # type: ignore
 
+        return runner, runner_runtime, proton_script, umu_proton_path
+
+    @staticmethod
+    def get_runner_info(config: BottleConfig) -> tuple[str, str]:
+        runner, runner_runtime, _proton_script, _umu_proton_path = (
+            WineCommand._resolve_runner(config)
+        )
+        return runner, runner_runtime
+
+    def _get_runner_info(self) -> tuple[str, str]:
+        runner, runner_runtime, proton_script, umu_proton_path = self._resolve_runner(
+            self.config
+        )
+        self.proton_script = proton_script
+        self.umu_proton_path = umu_proton_path
         return runner, runner_runtime
 
     def get_cmd(

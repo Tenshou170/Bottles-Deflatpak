@@ -1,70 +1,29 @@
 import os
-import sys
-import types
 import tempfile
 import contextlib
 import sqlite3
 import pytest
+from gi.repository import GLib
 
-try:
-    import gi  # noqa: F401
-    from gi.repository import Gio, GLib  # noqa: F401
-except ImportError:
-    _glib_stub = types.SimpleNamespace(
-        SOURCE_REMOVE=False,
-        idle_add=lambda func, *args, **kwargs: func(),
-        timeout_add=lambda *_a, **_k: 0,
-        markup_escape_text=lambda text: text,
-    )
-    _gio_stub = types.SimpleNamespace(
-        Settings=lambda *args, **kwargs: types.SimpleNamespace(
-            get_boolean=lambda *a: False,
-            get_int=lambda *a: 0,
-            get_string=lambda *a: "",
-        )
-    )
-    _gi_repository = types.SimpleNamespace(GLib=_glib_stub, Gio=_gio_stub)
-    sys.modules.setdefault(
-        "gi",
-        types.SimpleNamespace(
-            repository=_gi_repository, require_version=lambda *a, **k: None
-        ),
-    )
-    sys.modules.setdefault("gi.repository", _gi_repository)
+from bottles.backend.managers.manager import Manager
+from bottles.backend.utils.gsettings_stub import GSettingsStub
+from bottles.backend.managers.playtime import ProcessSessionTracker
+from bottles.backend.state import SignalManager
 
 
-class _FVSRepoStub:
-    def __init__(self, *args, **kwargs):
-        self.active_state_id = 0
-        self.states = []
-        self.has_no_states = True
-
-    def commit(self, *_args, **_kwargs):
-        return None
-
-    def restore_state(self, *_args, **_kwargs):
-        return None
-
-
-class _FVSError(Exception):
-    pass
-
-
-_fvs_exceptions = types.SimpleNamespace(
-    FVSNothingToCommit=_FVSError,
-    FVSStateNotFound=_FVSError,
-    FVSNothingToRestore=_FVSError,
-    FVSStateZeroNotDeletable=_FVSError,
-)
-_fvs_repo = types.SimpleNamespace(FVSRepo=_FVSRepoStub)
-sys.modules.setdefault(
-    "fvs", types.SimpleNamespace(repo=_fvs_repo, exceptions=_fvs_exceptions)
-)
-sys.modules.setdefault("fvs.repo", _fvs_repo)
-sys.modules.setdefault("fvs.exceptions", _fvs_exceptions)
-
-from bottles.backend.managers.manager import Manager  # noqa: E402
-from bottles.backend.managers.playtime import ProcessSessionTracker  # noqa: E402
+@pytest.fixture(autouse=True)
+def synchronous_callbacks(monkeypatch):
+    existing = Manager._instances.pop(Manager, None)
+    monkeypatch.setattr(Manager, "_playtime_signals_connected", False)
+    monkeypatch.setattr(SignalManager, "_SIGNALS", {})
+    monkeypatch.setattr(GLib, "idle_add", lambda func, *args, **kwargs: func(*args))
+    monkeypatch.setattr(GLib, "timeout_add", lambda *_args, **_kwargs: 0)
+    yield
+    current = Manager._instances.pop(Manager, None)
+    if current is not None:
+        current.playtime_tracker.shutdown()
+    if existing is not None:
+        Manager._instances[Manager] = existing
 
 
 @pytest.fixture()
@@ -76,7 +35,7 @@ def temp_xdg_home(monkeypatch):
 
 @pytest.fixture()
 def test_settings_stub():
-    class _S:
+    class _S(GSettingsStub):
         def get_boolean(self, key: str) -> bool:
             return True if key == "playtime-enabled" else False
 
@@ -94,6 +53,7 @@ def manager(temp_xdg_home, test_settings_stub):
     os.makedirs(db_dir, exist_ok=True)
     db_path = os.path.join(db_dir, "process_metrics.sqlite")
     tracker = ProcessSessionTracker(db_path=db_path, heartbeat_interval=5, enabled=True)
+    m.playtime_tracker.shutdown()
     m.playtime_tracker = tracker
     yield m
     with contextlib.suppress(Exception):

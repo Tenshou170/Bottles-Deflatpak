@@ -4,7 +4,11 @@ from typing import Optional
 import pytest
 
 from bottles.backend.utils import generic
-from bottles.backend.utils.generic import detect_encoding, is_ntsync_available
+from bottles.backend.utils.generic import (
+    detect_encoding,
+    is_esync_missing,
+    is_ntsync_available,
+)
 
 
 # CP932 is superset of Shift-JIS, which is default codec for Japanese in Windows
@@ -14,7 +18,7 @@ from bottles.backend.utils.generic import detect_encoding, is_ntsync_available
     [
         ("Hello, world!", None, "ascii"),
         ("   ", None, "ascii"),
-        ("Привет, мир!", None, "windows-1251"),
+        ("Привет, мир!", "ru_RU.windows-1251", "windows-1251"),
         ("こんにちは、世界！", "ja_JP", "cp932"),
         ("こんにちは、世界！", "ja_JP.utf-8", "utf-8"),
         ("你好，世界！", "zh_CN", "gbk"),
@@ -58,3 +62,43 @@ def test_ntsync_accepts_backported_runner_with_spaces(monkeypatch, tmp_path):
     monkeypatch.setattr(generic, "NTSYNC_DEVICE", str(device))
 
     assert is_ntsync_available(shlex.quote(str(runner / "wine")))
+
+
+@pytest.mark.parametrize(
+    ("wineserver", "missing"),
+    [
+        (b"getenv WINEESYNC here", False),
+        (b"no such support", True),
+        (None, False),
+    ],
+)
+def test_esync_missing_reads_the_runner_wineserver(tmp_path, wineserver, missing):
+    runner = tmp_path / "custom runner" / "bin"
+    runner.mkdir(parents=True)
+    if wineserver is not None:
+        (runner / "wineserver").write_bytes(wineserver)
+
+    assert is_esync_missing(shlex.quote(str(runner / "wine"))) is missing
+
+
+@pytest.mark.parametrize(
+    "data,confidence,expected",
+    [
+        # Low confidence keeps data that is already valid UTF-8 as UTF-8 and
+        # only prefers the guess when the bytes are not valid UTF-8.
+        (b"ambiguous input", 0.4, "utf-8"),
+        (b"\xff\xfe\x81 ambiguous", 0.4, "windows-1251"),
+        (b"ambiguous input", 0.5, "windows-1251"),
+        (b"ambiguous input", 0.9, "windows-1251"),
+    ],
+)
+def test_encoding_detection_preserves_the_confidence_threshold(
+    monkeypatch, data, confidence, expected
+):
+    monkeypatch.setattr(
+        generic.chardet,
+        "detect",
+        lambda _data: {"encoding": "windows-1251", "confidence": confidence},
+    )
+
+    assert detect_encoding(data) == expected

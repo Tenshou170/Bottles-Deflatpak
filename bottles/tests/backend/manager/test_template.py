@@ -77,6 +77,8 @@ def test_create_bottle_recovers_from_failed_template(monkeypatch, tmp_path):
             cancel_event.set()
             return Result(True)
 
+            return Result(True)
+
     manager = object.__new__(Manager)
     manager.runners_available = ["soda-11.0"]
     manager.dxvk_available = ["dxvk-2.7"]

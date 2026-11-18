@@ -23,6 +23,15 @@ from typing import Dict
 from bottles.backend.utils import json, yaml
 
 
+def is_official_package() -> bool:
+    """Whether the running build ships as an official package.
+
+    This fork is distributed without Flatpak or cpak packaging, so only an
+    actual Flatpak sandbox (the upstream build, when testing) counts here.
+    """
+    return "FLATPAK_ID" in os.environ
+
+
 class Paths:
     xdg_data_home = os.environ.get(
         "XDG_DATA_HOME", os.path.join(Path.home(), ".local/share")
