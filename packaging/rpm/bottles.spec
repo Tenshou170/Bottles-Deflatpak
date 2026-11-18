@@ -1,5 +1,5 @@
 Name:       bottles-deflatpak
-Version:    67.6
+Version:    67.7
 Release:    1
 Summary:    Run Windows in a Bottle (native fork, no Flatpak)
 Provides:   bottles = %{version}-%{release}
@@ -137,6 +137,13 @@ desktop-file-validate %buildroot%_datadir/applications/*.desktop
 
 
 %changelog
+* Wed Nov 18 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 67.7-1
+- Sync with upstream 67.7
+- Keep the native bwrap sandbox and drop reintroduced Flatpak/cpak code
+- Fix Proton runner resolution that upstream turned into a staticmethod
+- Fix Adwaita containers for bottle details and importer views
+- Track playtime sessions in memory when the statistics database is disabled
+
 * Tue Nov 10 2026 Tenshou Zmeyev <tenshou170@gmail.com> - 67.6-1
 - Sync with upstream 67.6
 - Keep the native bwrap sandbox and drop reintroduced Flatpak/cpak code
