@@ -94,20 +94,55 @@ jobs:
     name: "Build Arch Package (.pkg.tar.zst)"
     needs: [validate]
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # CachyOS ships its own repository (patool, vkbasalt-cli, yay) plus
+    # cachyos-rate-mirrors, and enables core/extra/multilib, so every dependency
+    # except fvs2 comes from the image's own repos. No third-party repo is added.
+    container: cachyos/cachyos:latest
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Rank Container Mirrors
+        run: |
+          # cachyos-rate-mirrors reorders /etc/pacman.d/mirrorlist and
+          # cachyos-mirrorlist by measured latency and throughput (rate-mirrors
+          # under the hood). A plain Arch container keeps whatever mirror is
+          # listed first, so one half-synced mirror aborts the whole transaction.
+          pacman -Sy --noconfirm --needed cachyos-rate-mirrors rate-mirrors
+          cachyos-rate-mirrors || echo "::warning::mirror ranking failed, keeping the image mirrorlists"
+
       - name: Install Build Dependencies & Setup Repos
         run: |
-          # Enable multilib
-          printf "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n" >> /etc/pacman.conf
+          retry() {
+            local attempt=0
+            until "$@"; do
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge 3 ]; then
+                echo "::error::command failed $attempt times: $*"
+                return 1
+              fi
+              echo "::warning::retrying in 10s: $*"
+              sleep 10
+            done
+          }
 
-          # Setup Chaotic-AUR (Using TrustAll to bypass unreliable GPG keyservers in CI)
-          # Use single quotes to ensure $arch is passed literally to pacman.conf
-          printf '\n[chaotic-aur]\nSigLevel = Optional TrustAll\nServer = https://cdn-mirror.chaotic.cx/chaotic-aur/$arch\n' >> /etc/pacman.conf
+          # Make sure every native repo this build needs is configured, even if a
+          # future image drops one of the stanzas from /etc/pacman.conf.
+          enable_repo() {
+            local repo="$1" include="$2"
+            if grep -q "^\[$repo\]" /etc/pacman.conf; then
+              return 0
+            fi
+            printf '\n[%s]\nInclude = %s\n' "$repo" "$include" >> /etc/pacman.conf
+            echo "::notice::enabled [$repo] via ${include}"
+          }
 
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm \
+          enable_repo cachyos /etc/pacman.d/cachyos-mirrorlist
+          enable_repo core /etc/pacman.d/mirrorlist
+          enable_repo extra /etc/pacman.d/mirrorlist
+          enable_repo multilib /etc/pacman.d/mirrorlist
+
+          retry pacman -Syu --noconfirm
+
+          retry pacman -S --needed --noconfirm \
             base-devel \
             git \
             meson \
@@ -130,6 +165,13 @@ jobs:
           echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
           chown -R builder:builder .
 
+          # fvs2 is the only dependency without a native package (it is AUR-only),
+          # so build it with the image's own yay instead of adding a third-party
+          # repository. Afterwards makepkg -s finds every dependency satisfied.
+          su builder -c "yay -S --needed --noconfirm \
+            --answerclean None --answerdiff None --answeredit None \
+            --answerupgrade None --removemake fvs2"
+
       - name: Build ZST Package
         run: |
           VERSION=$(grep -oP "version: '\K[^']+" meson.build | head -1)
@@ -144,7 +186,8 @@ jobs:
           sed -i "s#sha256sums=.*#sha256sums=('SKIP')#" PKGBUILD
 
           chown builder:builder ./*
-          # Now with Chaotic-AUR enabled, we can use -s to pull all dependencies
+          # Dependencies come from the ranked native repos and the AUR-built
+          # fvs2, so -s has nothing left to resolve.
           su builder -c "makepkg -fsc --noconfirm"
 
       - name: Upload ZST
